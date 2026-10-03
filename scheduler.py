@@ -31,6 +31,35 @@ def in_quiet_hours(now: datetime | None = None) -> bool:
     return (start <= h or h < end) if start > end else (start <= h < end)
 
 
+DOW_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+
+
+def cron_trigger(expr: str) -> CronTrigger:
+    """A standard 5-field crontab (day of week 0 or 7 = Sunday, 1 = Monday).
+    APScheduler's own from_crontab counts 0 = Monday, which would shift "1-5" (weekdays)
+    to Tuesday-Saturday, so the day-of-week field is translated to names here."""
+    fields = expr.split()
+    if len(fields) != 5:
+        raise ValueError("A cron schedule needs 5 fields: minute hour day month weekday.")
+    minute, hour, day, month, dow = fields
+    if dow != "*":
+        days: set[int] = set()
+        for part in dow.split(","):
+            rng, _, step = part.partition("/")
+            step_n = int(step) if step else 1
+            if rng == "*":
+                lo, hi = 0, 6
+            elif "-" in rng:
+                lo, hi = (int(x) for x in rng.split("-"))
+            else:
+                lo = hi = int(rng)
+            if not (0 <= lo <= 7 and 0 <= hi <= 7):
+                raise ValueError("Weekday must be 0-7 (0 or 7 = Sunday).")
+            days.update(d % 7 for d in range(lo, hi + 1, step_n))
+        dow = ",".join(DOW_NAMES[d] for d in sorted(days))
+    return CronTrigger(minute=minute, hour=hour, day=day, month=month, day_of_week=dow, timezone=TZ)
+
+
 class Scheduler:
     def __init__(self, brain):
         self.brain = brain
@@ -56,7 +85,7 @@ class Scheduler:
 
     def _register(self, job: dict) -> None:
         if job.get("cron"):
-            trigger = CronTrigger.from_crontab(job["cron"], timezone=TZ)
+            trigger = cron_trigger(job["cron"])
         else:
             run_at = datetime.fromisoformat(job["run_at"])
             if run_at.tzinfo is None:
@@ -88,7 +117,7 @@ class Scheduler:
         if mode not in ("task", "watch"):
             raise ValueError("mode must be 'task' or 'watch'")
         if cron:
-            CronTrigger.from_crontab(cron, timezone=TZ)          # validate
+            cron_trigger(cron)                                    # validate
         job = {"id": uuid.uuid4().hex[:6], "name": name, "instructions": instructions,
                "cron": cron, "run_at": run_at, "mode": mode,
                "created": datetime.now(TZ).isoformat(timespec="minutes")}
@@ -107,6 +136,13 @@ class Scheduler:
             pass
         self._save()
         return True
+
+    async def run_now(self, job_id: str) -> None:
+        """Run a scheduled task right away (it keeps its schedule)."""
+        job = self.jobs.get(job_id)
+        if not job:
+            raise ValueError("No task with that id.")
+        await self.brain.run_once(job["instructions"], mode=job["mode"], label=job["name"])
 
     def as_list(self) -> list[dict]:
         out = []

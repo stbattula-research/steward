@@ -286,6 +286,8 @@ class WebUI:
         await ws.send_json({"type": "tasks", "items": self.scheduler.as_list()})
         await self.push_memory(ws)
         await ws.send_json({"type": "models", **self.brain.registry.public()})
+        if kind == "desktop" and self.router.connectors:
+            await ws.send_json({"type": "connectors", **(await self.router.connectors.status())})
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
@@ -304,6 +306,7 @@ class WebUI:
         if not on_phone:
             self.last_active = time.time()
         if on_phone and (kind.startswith("model") or kind.startswith("local_") or kind.startswith("phone_")
+                         or kind.startswith("conn_")
                          or kind in ("memory_save", "memory_delete", "ollama_tags", "provider_models")):
             # Setup stays on the Mac: a lost phone can chat, but can't change keys, models or pairing.
             if kind not in ("model_select", "models_get"):
@@ -350,6 +353,25 @@ class WebUI:
             asyncio.ensure_future(self.scheduler._heartbeat_now())
         elif kind == "cancel_task":
             self.scheduler.remove(m.get("id", ""))
+        elif kind == "task_add":
+            try:
+                if not str(m.get("instructions") or "").strip():
+                    raise ValueError("Say what Steward should do.")
+                job = self.scheduler.add(str(m.get("name") or "Task").strip()[:80] or "Task",
+                                         str(m.get("instructions") or "").strip(),
+                                         str(m.get("cron") or "").strip(), str(m.get("run_at") or "").strip(),
+                                         m.get("mode") if m.get("mode") in ("task", "watch") else "task")
+                await self._broadcast({"type": "task_saved", "id": job["id"]})
+                await self._broadcast({"type": "toast", "text": f"Scheduled “{job['name']}”."})
+            except Exception as e:
+                await self._broadcast({"type": "task_error", "error": str(e)[:200]})
+        elif kind == "task_run":
+            jid = m.get("id", "")
+            if jid in self.scheduler.jobs:
+                await self._broadcast({"type": "toast", "text": "Running it now."})
+                asyncio.ensure_future(self.scheduler.run_now(jid))
+        elif kind.startswith("conn_"):
+            await self._on_conn(m)
         elif kind == "memory_get":
             await self.push_memory()
         elif kind == "memory_save":
@@ -491,6 +513,35 @@ class WebUI:
         except Exception as e:
             log.exception("local model action failed")
             await self._broadcast({"type": "toast", "text": f"Something went wrong: {str(e)[:200]}", "error": True})
+
+    # -------------------------------------------------------- chat apps ----
+    async def _on_conn(self, m: dict) -> None:
+        conns = self.router.connectors
+        if not conns:
+            return
+        kind, app = m["type"], m.get("kind", "")
+        try:
+            if kind == "conn_status":
+                pass
+            elif kind == "conn_save":
+                await conns.configure(app, m.get("fields") or {})
+            elif kind == "conn_disable":
+                await conns.disable(app)
+            elif kind == "conn_remove":
+                await conns.remove(app)
+            elif kind == "conn_unpair":
+                await conns.unpair(app)
+            elif kind == "conn_alerts":
+                await conns.set_alerts(app, bool(m.get("on")))
+            elif kind == "conn_test":
+                await conns.test(app)
+                await self._broadcast({"type": "toast", "text": "Test message sent."}, kind="desktop")
+            elif kind == "conn_funnel" and app == "whatsapp":
+                asyncio.ensure_future(conns.items["whatsapp"].ensure_funnel())
+        except Exception as e:
+            log.exception("chat app action failed")
+            await self._broadcast({"type": "toast", "error": True, "text": str(e)[:300]}, kind="desktop")
+        await conns.push_status()
 
     # ------------------------------------------------------------- phone ----
     async def push_phone_status(self) -> None:

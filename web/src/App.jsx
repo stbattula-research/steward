@@ -10,6 +10,8 @@ import { Icon } from './icons.jsx';
 import MemoryPanel from './MemoryPanel.jsx';
 import ModelsPanel, { ModelPicker } from './ModelsPanel.jsx';
 import PhonePanel from './PhonePanel.jsx';
+import SchedulePanel from './Schedule.jsx';
+import ChatAppsPanel from './ChatApps.jsx';
 import { CouncilCard, ModeChip, Related, SourceCards, TeamChip, citeHtml } from './Research.jsx';
 
 marked.setOptions({ breaks: true, gfm: true });
@@ -211,6 +213,8 @@ function FileCard({ ev }) {
   );
 }
 
+const SOURCE_TAG = { phone: 'from phone', telegram: 'via Telegram', whatsapp: 'via WhatsApp', imessage: 'via iMessage',
+  discord: 'via Discord', slack: 'via Slack' };
 const MODE_TAG = { web: 'Web search', academic: 'Academic', research: 'Deep research' };
 
 function Message({ ev, onAsk }) {
@@ -221,7 +225,7 @@ function Message({ ev, onAsk }) {
         <div className="meta">
           {ev.team && <span className="tag"><Icon name="users" size={11} /> {ev.team.join(' · ')}</span>}
           {ev.mode && <span className="tag">{MODE_TAG[ev.mode] || ev.mode}</span>}
-          {ev.source === 'telegram' && <span className="tag">via Telegram</span>}{ev.source === 'phone' && <span className="tag">from phone</span>}{clock(ev.ts)}
+          {ev.source && ev.source !== 'web' && <span className="tag">{SOURCE_TAG[ev.source] || `via ${ev.source}`}</span>}{clock(ev.ts)}
         </div>
       </div>
     );
@@ -448,7 +452,7 @@ function PhoneSwitch({ prefs, send }) {
   );
 }
 
-function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, onMemory, memoryCount, onModels, modelCount, onPhone, phone }) {
+function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, onMemory, memoryCount, onModels, modelCount, onPhone, phone, onSchedule, onChatApps, chatAppCount }) {
   const theme = useTheme();
   const [confirm, setConfirm] = useState(null);
   const hour = new Date().getHours();
@@ -495,20 +499,28 @@ function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, o
           <span className="count">{info.phones || 0}</span>
           <Icon name="chevron" size={14} />
         </button>
+        <button className="memory-btn" onClick={onChatApps}>
+          <Icon name="chat" />
+          <span>Chat apps</span>
+          <span className="count">{chatAppCount}</span>
+          <Icon name="chevron" size={14} />
+        </button>
         </>)}
       </div>
 
       <div className="section grow">
-        <div className="section-title">Scheduled <span className="count">{tasks.length}</span></div>
+        <div className="section-title">Scheduled <span className="count">{tasks.length}</span>
+          <button className="section-add" onClick={onSchedule} aria-label="New scheduled task" title="New scheduled task"><Icon name="plus" size={14} /></button>
+        </div>
         {tasks.length === 0 ? (
-          <p className="muted small">Nothing scheduled. Try “remind me at 5pm to…” or “every morning…”.</p>
+          <p className="muted small">Nothing scheduled. <button className="link-btn" onClick={onSchedule}>Schedule a task</button>, or say “every morning…” in chat.</p>
         ) : (
           <ul className="tasks">
             {tasks.map((t) => (
               <li key={t.id} className="task">
                 <div className="task-top">
                   <span className={`mode ${t.mode}`}>{t.mode === 'watch' ? 'Watch' : 'Task'}</span>
-                  <span className="task-name">{t.name}</span>
+                  <button className="task-name" onClick={onSchedule}>{t.name}</button>
                 </div>
                 <div className="task-when">{t.next_run ? `Next ${relTime(t.next_run)}` : 'Paused'}{t.cron ? ' · repeats' : ''}</div>
                 <button
@@ -527,10 +539,7 @@ function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, o
 
       <div className="side-foot">
         <AppearanceSwitch prefs={prefs} send={send} />
-        {(info.telegram || info.phones > 0) && <PhoneSwitch prefs={prefs} send={send} />}
-        {!phone && info.telegram && (
-          <div className="tg-line"><span className="dot on" />Telegram connected</div>
-        )}
+        {(info.telegram || info.phones > 0 || chatAppCount > 0) && <PhoneSwitch prefs={prefs} send={send} />}
       </div>
     </aside>
   );
@@ -617,7 +626,10 @@ function Welcome({ info, models, onLocal, onConnect, onSkip }) {
 /* -------------------------------------------------------------------- app -- */
 
 export default function App() {
-  const { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send, councilLive } = useAgent();
+  const { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send, councilLive, connectors } = useAgent();
+  const [schedOpen, setSchedOpen] = useState(false);
+  const [appsOpen, setAppsOpen] = useState(false);
+  const chatAppCount = (connectors.items || []).filter((c) => c.enabled && c.paired && c.state === 'on').length + (info.telegram ? 1 : 0);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [modelsTab, setModelsTab] = useState(null);
   const openModels = (tab) => { setModelsTab(tab || null); setModelsOpen(true); };
@@ -683,7 +695,11 @@ export default function App() {
         onMemory={() => { setMemOpen(true); setSideOpen(false); send({ type: 'memory_get' }); }}
         memoryCount={memory.files.length}
         onModels={() => { openModels(); setSideOpen(false); }} modelCount={models.items.length}
-        onPhone={() => { setPhoneOpen(true); setSideOpen(false); }} phone={phone} />
+        onPhone={() => { setPhoneOpen(true); setSideOpen(false); }} phone={phone}
+        onSchedule={() => { setSchedOpen(true); setSideOpen(false); }}
+        onChatApps={() => { setAppsOpen(true); setSideOpen(false); }} chatAppCount={chatAppCount} />
+      {schedOpen && <SchedulePanel tasks={tasks} send={send} onClose={() => setSchedOpen(false)} />}
+      {appsOpen && <ChatAppsPanel data={connectors} send={send} phoneReady={!!connectors.tailscale} onClose={() => setAppsOpen(false)} />}
       {phoneOpen && <PhonePanel send={send} agent={info.agent} onClose={() => setPhoneOpen(false)} />}
       {modelsOpen && <ModelsPanel models={models} send={send} initialTab={modelsTab} onClose={() => setModelsOpen(false)} />}
       {welcome && <Welcome info={info} models={models}

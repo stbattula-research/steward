@@ -74,6 +74,11 @@ async def serve():
     scheduler = Scheduler(brain)
     brain.scheduler = scheduler
     router.web = webserver.WebUI(router, brain, scheduler)
+    import connectors
+    web = router.web
+    router.connectors = connectors.Connectors(
+        router, brain, scheduler, web=web,
+        notify=lambda ev, desktop_only=False: web._broadcast(ev, kind="desktop" if desktop_only else None))
 
     tg_app = None
     if telegram_bot.enabled():
@@ -84,6 +89,7 @@ async def serve():
     await brain.start()
     scheduler.start()
     await router.web.start()
+    asyncio.ensure_future(router.connectors.start_all())
     asyncio.ensure_future(brain.warm_up())
     if tg_app:
         try:
@@ -110,6 +116,7 @@ async def serve():
         await tg_app.updater.stop()
         await tg_app.stop()
         await tg_app.shutdown()
+    await router.connectors.stop_all()
     await brain.close()
     await router.web.bridge.close()
 

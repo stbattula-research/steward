@@ -7,3 +7,5 @@ litellm>=1.100,<2
 pywebpush>=2.0
 segno>=1.6
 ddgs>=9.0
+discord.py>=2.4
+slack_bolt>=1.20

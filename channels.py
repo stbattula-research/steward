@@ -22,6 +22,7 @@ class Router:
     def __init__(self):
         self.web = None        # webserver.WebUI
         self.telegram = None   # telegram_bot.TelegramChannel
+        self.connectors = None # connectors.Connectors (WhatsApp, iMessage, Discord, Slack)
         self.origin = "web"    # web | telegram | background
 
     def begin(self, origin: str) -> None:
@@ -30,9 +31,25 @@ class Router:
     def _phone_mode(self) -> str:
         return self.web.prefs.get("phone_mode", "auto") if self.web else "always"
 
+    def _chat_origins(self) -> set:
+        return {"telegram", "phone", *((self.connectors.items.keys()) if self.connectors else ())}
+
+    def _to_connectors(self) -> list:
+        """Chat apps that should get this: the one you wrote from, plus every app with Alerts on
+        when this is a heads-up or scheduled task (following the Phone alerts setting)."""
+        if not self.connectors:
+            return []
+        out = []
+        for c in self.connectors.running():
+            if self.origin == c.kind:
+                out.append(c)
+            elif c.cfg.get("alerts", True) and self.origin not in self._chat_origins() and self._away():
+                out.append(c)
+        return out
+
     def _away(self) -> bool:
         """Should this also reach the owner's phone?"""
-        if self.origin in ("telegram", "phone"):
+        if self.origin in self._chat_origins():
             return True
         desk = bool(self.web and self.web.has_clients())
         mode = self._phone_mode()
@@ -48,7 +65,7 @@ class Router:
         return bool(self.web and self.web.mobile.has_push())
 
     def _to_push(self) -> bool:
-        return (self._push_ready() and self.origin != "telegram" and self._away()
+        return (self._push_ready() and self.origin not in self._chat_origins() - {"phone"} and self._away()
                 and not self.web.phone_visible())
 
     def _to_telegram(self) -> bool:
@@ -57,7 +74,7 @@ class Router:
         if self.origin == "telegram":
             return True
         # The phone app replaces Telegram for alerts once it has notifications on.
-        return self.origin != "phone" and not self._push_ready() and self._away()
+        return self.origin not in self._chat_origins() and not self._push_ready() and self._away()
 
     def _notify_phone(self, payload: dict, urgency: str = "normal") -> None:
         asyncio.ensure_future(self.web.mobile.push(payload, urgency))
@@ -93,6 +110,8 @@ class Router:
             self._notify_phone({"title": AGENT_NAME, "body": self._snippet(text), "tag": "reply"})
         if self._to_telegram():
             await self.telegram.send_text(text)
+        for c in self._to_connectors():
+            await c.send_text(text)
 
     async def send_file(self, path: Path, caption: str = "") -> None:
         if self.web:
@@ -103,15 +122,21 @@ class Router:
                                 "tag": "file"})
         if self._to_telegram():
             await self.telegram.send_file(path, caption)
+        for c in self._to_connectors():
+            await c.send_file(path, caption)
 
     async def ask_approval(self, summary: str) -> bool:
         asks = []
-        phone = self._push_ready() and self.origin != "telegram" and (self._away() or not self.web.has_clients())
+        phone = (self._push_ready() and self.origin not in self._chat_origins() - {"phone"}
+                 and (self._away() or not self.web.has_clients()))
         if self.web and (self.web.clients or self.origin in ("web", "phone") or phone):
             asks.append(self.web.ask_approval(summary, push=phone and not self.web.phone_visible()))
-        if self.telegram and (self.origin == "telegram" or self._to_telegram()
+        if self.telegram and self.origin not in self._chat_origins() - {"telegram", "phone"} and (
+                self.origin == "telegram" or self._to_telegram()
                               or not (self.web and (self.web.clients or phone))):
             asks.append(self.telegram.ask_approval(summary))
+        for c in self._to_connectors():
+            asks.append(c.ask_approval(summary))
         if not asks:
             return False
         tasks = [asyncio.ensure_future(a) for a in asks]
@@ -131,8 +156,12 @@ class Router:
     async def on_sources(self, items: list[dict]) -> None:
         if self.web:
             await self.web.emit({"type": "sources", "items": items})
+        lines = "Sources:\n" + "\n".join(f"[{s['n']}] {s['url']}" for s in items[:10])
         if self._to_telegram() and items:
-            await self.telegram.send_text("Sources:\n" + "\n".join(f"[{s['n']}] {s['url']}" for s in items[:10]))
+            await self.telegram.send_text(lines)
+        for c in self._to_connectors():
+            if items:
+                await c.send_text(lines)
 
     async def council_event(self, ev: dict, persist: bool = True) -> None:
         if not self.web:

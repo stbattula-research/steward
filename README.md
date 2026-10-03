@@ -18,7 +18,7 @@ You choose what powers it: a **free local model** that never leaves your Mac (Ol
 | 🔎 **Answers with sources** | Searches the web and answers with numbered citations, source cards and follow-up questions. It has Web, Academic and Deep research modes, plus **Team mode**: up to 3 models research, debate and agree on one answer. |
 | 🌐 **Use the web like you do** | Drives a real Chrome profile that stays signed in, so it can navigate, fill forms, download statements and compare prices on sites you already use. |
 | 🔐 **Log in safely** | Passwords live in the **macOS Keychain**, never in a file. It asks before using one, types it only into the matching site, and scrubs it from every message and log. |
-| 💬 **Talk from anywhere** | A Mac app, plus a **phone app for iPhone and Android** with notifications, connected privately through Tailscale. Telegram works too if you prefer it. It's one conversation you can continue on any of them. |
+| 💬 **Talk from anywhere** | A Mac app, a **phone app for iPhone and Android** with notifications, and **WhatsApp, iMessage, Telegram, Discord or Slack**. It's one conversation you can continue on any of them. |
 | 🎙️ **Voice** | Hold a conversation with voice notes, transcribed on-device with Whisper. |
 | ⏰ **Scheduled tasks** | "Every weekday at 8am send me my calendar", "Remind me at 5pm to call the bank", "Every Sunday clean up my Downloads". |
 | 👀 **Proactive watching** | "Tell me when the flight price drops", plus an hourly watchlist. These checks are read-only and only ping you when something needs attention. |
@@ -152,8 +152,35 @@ The phone, the Mac app and Telegram share **one conversation**. **Phone alerts**
 
 Your Mac has to be awake and online for the phone to reach it (see Troubleshooting).
 
-### Telegram (optional)
-If you'd rather use Telegram, set up a bot with `Configure Steward.command`. Text or voice-note your bot. Commands: `/screen` `/stop` `/new` `/status` `/tasks` `/cancel <id>` `/watch` `/memory`. Once a phone app has notifications on, alerts go to the phone app instead of Telegram, and Telegram only answers messages you send it.
+### Chat apps: WhatsApp, iMessage, Telegram, Discord, Slack
+
+Don't want another app on your phone? Talk to Steward from a messaging app you already use. In the Mac app, open **Chat apps** in the sidebar, pick an app, and follow the steps on screen:
+
+| App | What you need | Notes |
+|---|---|---|
+| **iMessage** | Nothing extra. Uses Messages on this Mac | Text **yourself** from your iPhone, and Steward answers in that chat. It needs Full Disk Access for Steward's Python (the panel shows the exact path). |
+| **WhatsApp** | A free Meta developer app (official WhatsApp Cloud API) and Tailscale | Meta has to deliver messages to your Mac, so Steward uses Tailscale Funnel to publish **one** webhook (port 8443) that only accepts messages signed with your app secret. Approvals show as buttons. WhatsApp lets Steward message you only within 24 hours of your last message. |
+| **Telegram** | A bot from BotFather | Set up with `Configure Steward.command`. |
+| **Discord** | A bot token from the Discord Developer Portal | Add the bot to a server you own, then DM it. |
+| **Slack** | A Slack app made from the manifest the panel gives you | Uses Socket Mode, so there's no public URL. DM the app. |
+
+**How they all work:**
+- **Only you can use it.** You pair each app once by sending it the 6-digit code shown on your Mac. Anyone else who messages it is ignored.
+- **Replies go back to the app you wrote from.** Scheduled tasks and heads-ups also go to every app with **"Send scheduled tasks and heads-ups here too"** turned on, following the **Phone alerts** setting.
+- **Approvals:** Steward asks, and you reply **YES** or **NO**. On WhatsApp you can tap **Approve** or **Deny**.
+- **Commands:** `/stop`, `/new`, `/status`, `/tasks`, `/help`.
+- **Voice notes** are transcribed on your Mac, and photos and files are saved to `~/AgentWorkspace/inbox`.
+- **Keys and tokens** are stored in the macOS Keychain.
+
+### Scheduled tasks
+
+Click **+** next to **Scheduled** in the sidebar, or just ask in chat ("every weekday at 8am send me my calendar"). You choose:
+
+- **What to do:** in plain words.
+- **The type:** *Do it and tell me the result*, or *Keep an eye out* (read-only, only tells you when something needs you, and skips quiet hours).
+- **When:** once, every day, weekdays, chosen days of the week, monthly, every few hours, or a custom cron line.
+
+Each task has **Run now** and **Delete**. Results go to the app, your phone and your chat apps.
 
 ### Things to try
 - *What's using the most space on my Mac?*
@@ -247,6 +274,7 @@ scheduler.py (tasks, watchlist) ────────────────
 | `scheduler.py` | Scheduled tasks, watch jobs, hourly watchlist |
 | `channels.py`, `webserver.py`, `telegram_bot.py` | Routing between the Mac app, the phone app and Telegram |
 | `mobile.py` | Phone app: pairing, Tailscale access, push notifications |
+| `connectors.py` | Chat apps: WhatsApp, iMessage, Discord, Slack |
 | `websearch.py`, `council.py` | Web search with citations; Team mode (multi-model discussion) |
 | `tools.py`, `vault.py`, `voice.py` | Custom tools, Keychain logins, Whisper transcription |
 | `web/` | Desktop app (React + Vite; `web/dist` is prebuilt) |
