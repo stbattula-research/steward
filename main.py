@@ -122,7 +122,7 @@ if __name__ == "__main__":
     setup_logging()
     import models
     _m = models.Registry().active_model()
-    if models.is_local(_m):
+    if _m is not None and models.is_local(_m):
         import urllib.request
         try:
             urllib.request.urlopen(f"{config.OLLAMA_URL}/api/tags", timeout=5)

@@ -182,6 +182,9 @@ def build(router, brain, scheduler):
             await router.web.push_models() if router.web else None
             await update.message.reply_text(f"Switched to {m['label']}. Starting a fresh conversation.")
             return
+        if not reg.models:
+            await update.message.reply_text("No models yet. Open the Steward app on your Mac → Models to set one up.")
+            return
         lines = []
         for i, m in enumerate(reg.models, 1):
             mark = "✅" if m["id"] == reg.active else "▫️"

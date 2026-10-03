@@ -76,6 +76,14 @@ def _integrations() -> dict:
         return {}
 
 
+class NoModel(Exception):
+    """No AI model has been set up yet."""
+
+
+NO_MODEL_MSG = ("No AI model is set up yet. Open **Models** in the sidebar to download a free model "
+                "that runs on your Mac, or connect a provider like Claude, OpenAI or Gemini.")
+
+
 class BufferChannel:
     """Collects a background run's messages so it only pings you if there's news."""
     def __init__(self, real: Channel):
@@ -169,6 +177,8 @@ class Brain:
     def _options(self, resume: str | None, channel: Channel, mode: str = "chat",
                  m: dict | None = None) -> ClaudeAgentOptions:
         m = m or self._model_for(mode)
+        if m is None:
+            raise NoModel()
         model, env, budget = self._brain_env(m)
         local = models.is_local(m)
         decide = self._decider(channel, mode)
@@ -210,6 +220,9 @@ class Brain:
 
     # ------------------------------------------------------------ lifecycle --
     async def start(self) -> None:
+        if self.registry.active_model() is None:
+            self.client = None          # nothing to talk to yet; the app shows setup
+            return
         resume = None
         if config.SESSION_FILE.exists():
             resume = json.loads(config.SESSION_FILE.read_text()).get("session_id")
@@ -226,6 +239,9 @@ class Brain:
         if self.client:
             await self.client.disconnect()
         config.SESSION_FILE.unlink(missing_ok=True)
+        if self.registry.active_model() is None:
+            self.client = None
+            return
         self.client = ClaudeSDKClient(self._options(None, self.channel))
         await self.client.connect()
 
@@ -246,7 +262,8 @@ class Brain:
     async def warm_up(self) -> None:
         """Local models: process the (large, fixed) instructions + tool list once at startup,
         so Ollama has them cached and your first real message starts fast."""
-        if not models.is_local(self.registry.active_model()):
+        m = self.registry.active_model()
+        if m is None or not models.is_local(m):
             return
         async with self.lock:
             self.busy = True
@@ -366,6 +383,9 @@ class Brain:
                     text = ("[For context, automated runs since we last talked reported:\n"
                             + "\n".join(self.recent_reports[-5:]) + "]\n\n" + text)
                     self.recent_reports.clear()
+                if self.client is None:
+                    await self.channel.send_text(NO_MODEL_MSG)
+                    return
                 self.repeats = {}
                 self.context_full = False
                 self.active = self.client
@@ -403,6 +423,11 @@ class Brain:
             self.busy = True
             await self._hook("begin", "background")
             await self._hook("set_status", True, label)
+            if self._model_for(mode) is None:
+                self.busy = False
+                await self._hook("set_status", False, "")
+                log.info("skipping '%s': no model set up", label)
+                return False
             self.repeats = {}
             self.context_full = False
             buf = BufferChannel(self.channel)

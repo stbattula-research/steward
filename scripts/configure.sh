@@ -27,6 +27,7 @@ ask_secret() {
 
 echo
 echo "${bold}Steward setup${reset}"
+ARCH=$(uname -m)
 echo "Answer a few questions. Press Enter to accept the value in [brackets]."
 echo "You can change these later with ${bold}Configure Steward.command${reset}."
 echo
@@ -37,38 +38,27 @@ ask "Your first name (so the agent knows who it works for)" "$DEFAULT_OWNER"; OW
 DEFAULT_AGENT=$(get AGENT_NAME); ask "Name for your agent" "${DEFAULT_AGENT:-Steward}"; AGENT_NAME="$REPLY"
 
 # --- brain ------------------------------------------------------------------
+# Hosted AI providers (Claude, OpenAI, Gemini, ...) are added later in the app: Models.
 RAM_GB=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 17179869184) / 1073741824 ))
-ARCH=$(uname -m)
-if   [ "$RAM_GB" -ge 40 ]; then REC_MODEL="gemma4:26b"
-elif [ "$RAM_GB" -ge 14 ]; then REC_MODEL="gemma4:12b"
-else                            REC_MODEL="gemma4:e4b"; fi
+if   [ "$RAM_GB" -ge 32 ]; then REC_MODEL="gemma4:26b"; REC_SIZE="about 17 GB"
+elif [ "$RAM_GB" -ge 16 ]; then REC_MODEL="gemma4:12b"; REC_SIZE="about 8 GB"
+else                            REC_MODEL="gemma4:e4b"; REC_SIZE="about 8 GB"; fi
 
-echo
-echo "${bold}Which brain should power the agent?${reset}"
-echo "  1) Local model with Ollama    free, private, runs on this Mac (${RAM_GB} GB RAM → ${REC_MODEL})"
-echo "  2) Claude via Anthropic API   strongest at multi-step tasks, pay per use (needs an API key)"
-echo "  3) Ollama Cloud               hosted open models, no local RAM needed (needs an Ollama API key)"
-echo "  4) Custom                     any Anthropic-compatible endpoint (base URL + key + model)"
-case "$(get BRAIN_PROVIDER)" in anthropic) D=2;; ollama-cloud) D=3;; custom) D=4;; *) D=1;; esac
-ask "Choose 1-4" "$D"
-BRAIN_PROVIDER=ollama; OLLAMA_MODEL=$(get OLLAMA_MODEL); ANTHROPIC_API_KEY=$(get ANTHROPIC_API_KEY); CLAUDE_MODEL=$(get CLAUDE_MODEL)
+BRAIN_PROVIDER=$(get BRAIN_PROVIDER); OLLAMA_MODEL=$(get OLLAMA_MODEL)
+ANTHROPIC_API_KEY=$(get ANTHROPIC_API_KEY); CLAUDE_MODEL=$(get CLAUDE_MODEL)
 BRAIN_BASE_URL=$(get BRAIN_BASE_URL); BRAIN_API_KEY=$(get BRAIN_API_KEY); BRAIN_MODEL=$(get BRAIN_MODEL)
+echo
+echo "${bold}A free AI model that runs on this Mac${reset}"
+echo "Private and free: nothing leaves your Mac. This Mac has ${RAM_GB} GB of memory, so the best fit"
+echo "is ${bold}${REC_MODEL}${reset} (${REC_SIZE} download). You can also connect Claude, OpenAI, Gemini and"
+echo "others later in the app (Models), with no Terminal needed."
+case "$BRAIN_PROVIDER" in none) D=n;; ""|ollama) D=Y;; *) D=n;; esac
+ask "Download the free local model now? [Y/n]" "$D"
 case "$REPLY" in
-  2) BRAIN_PROVIDER=anthropic
-     echo "Get a key at https://console.anthropic.com (set a monthly spend limit there)."
-     ask_secret "Anthropic API key" "$ANTHROPIC_API_KEY"; ANTHROPIC_API_KEY="$REPLY"
-     ask "Claude model (blank = SDK default)" "$CLAUDE_MODEL"; CLAUDE_MODEL="$REPLY" ;;
-  3) BRAIN_PROVIDER=ollama-cloud; BRAIN_BASE_URL="https://ollama.com"
-     echo "Create a key at https://ollama.com/settings/keys and pick a cloud model at https://ollama.com/search?c=cloud"
-     ask_secret "Ollama API key" "$BRAIN_API_KEY"; BRAIN_API_KEY="$REPLY"
-     ask "Model name" "${BRAIN_MODEL:-gpt-oss:120b}"; BRAIN_MODEL="$REPLY" ;;
-  4) BRAIN_PROVIDER=custom
-     ask "Base URL (Anthropic Messages API compatible)" "$BRAIN_BASE_URL"; BRAIN_BASE_URL="$REPLY"
-     ask_secret "API key / token" "$BRAIN_API_KEY"; BRAIN_API_KEY="$REPLY"
-     ask "Model name" "$BRAIN_MODEL"; BRAIN_MODEL="$REPLY" ;;
-  *) BRAIN_PROVIDER=ollama
-     [ "$ARCH" != "arm64" ] && echo "Note: this Mac has an Intel chip; local models will be slow. Options 2-4 work better."
-     ask "Ollama model (any model with tool calling)" "${OLLAMA_MODEL:-$REC_MODEL}"; OLLAMA_MODEL="$REPLY" ;;
+  n|N|no|No)
+     if [ "$BRAIN_PROVIDER" = "ollama" ] || [ -z "$BRAIN_PROVIDER" ]; then BRAIN_PROVIDER=none; fi ;;
+  *) BRAIN_PROVIDER=ollama; OLLAMA_MODEL=${OLLAMA_MODEL:-$REC_MODEL}
+     if [ "$ARCH" != "arm64" ]; then echo "Note: this Mac has an Intel chip, so local models will be slow."; fi ;;
 esac
 
 # --- Telegram (optional) ----------------------------------------------------

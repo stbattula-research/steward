@@ -24,6 +24,7 @@ def aiohttp_client():
 
 import bridge
 import config
+import localmodels
 import models
 import voice
 
@@ -55,7 +56,8 @@ class WebUI:
         self.files: dict[str, Path] = {}
         self.status = {"type": "status", "busy": False, "label": ""}
         self.last_active = 0.0
-        self.prefs = {"phone_mode": "auto", "theme": "auto"}   # phone: auto|always|off · theme: auto|light|dark
+        self.local = localmodels.LocalModels(self._broadcast)
+        self.prefs = {"phone_mode": "auto", "theme": "auto", "onboarded": False}   # phone: auto|always|off · theme: auto|light|dark
         try:
             if config.PREFS_FILE.exists():
                 self.prefs.update(json.loads(config.PREFS_FILE.read_text()))
@@ -189,8 +191,9 @@ class WebUI:
         await self._broadcast({"type": "toast", "text": f"Removed {name}"})
 
     async def set_pref(self, key: str, value) -> None:
-        allowed = {"phone_mode": ("auto", "always", "off"), "theme": ("auto", "light", "dark")}
-        if value in allowed.get(key, ()):
+        allowed = {"phone_mode": ("auto", "always", "off"), "theme": ("auto", "light", "dark"),
+                   "onboarded": (True, False)}
+        if any(value is v or value == v for v in allowed.get(key, ())):
             self.prefs[key] = value
             config.PREFS_FILE.write_text(json.dumps(self.prefs))
             await self._broadcast({"type": "prefs", "prefs": self.prefs})
@@ -225,7 +228,7 @@ class WebUI:
         self.clients.add(ws)
         self.last_active = time.time()
         await ws.send_json({"type": "hello", "agent": config.AGENT_NAME, "avatar": config.AGENT_AVATAR,
-                            "model": self.brain.registry.active_model()["label"],
+                            "model": (self.brain.registry.active_model() or {}).get("label", "No model yet"),
                             "telegram": bool(self.router.telegram), "prefs": self.prefs})
         await ws.send_json({"type": "history", "events": list(self.history)})
         await ws.send_json(self.status)
@@ -283,15 +286,18 @@ class WebUI:
             await self.delete_playbook(m.get("name", ""))
         elif kind == "set_pref":
             await self.set_pref(m.get("key"), m.get("value"))
-        elif kind.startswith("model") or kind == "ollama_tags":
+        elif kind.startswith("model") or kind in ("ollama_tags", "provider_models"):
             await self._on_models(m)
+        elif kind.startswith("local_"):
+            await self._on_local(m)
         elif kind == "presence":
             pass   # last_active already updated
 
     # ------------------------------------------------------------ models -----
     async def push_models(self) -> None:
         await self._broadcast({"type": "models", **self.brain.registry.public()})
-        await self._broadcast({"type": "hello_update", "model": self.brain.registry.active_model()["label"]})
+        await self._broadcast({"type": "hello_update",
+                               "model": (self.brain.registry.active_model() or {}).get("label", "No model yet")})
 
     async def _on_models(self, m: dict) -> None:
         reg = self.brain.registry
@@ -309,6 +315,9 @@ class WebUI:
                 saved = reg.save_model(m.get("model") or {})
                 if m.get("background"):
                     reg.set_background(saved["id"])
+                if m.get("use_now") or self.brain.client is None:
+                    await self.brain.switch_model(saved["id"])
+                    await self.emit({"type": "divider", "text": f"New conversation · {saved['label']}"})
                 await self.push_models()
                 await self._broadcast({"type": "toast", "text": f"Saved {saved['label']}"})
                 await self._broadcast({"type": "model_saved", "id": saved["id"]})
@@ -330,6 +339,11 @@ class WebUI:
                 key = (draft.get("api_key") or "").strip() or None
                 ok, msg = await bridge.test_model(test, key)
                 await self._broadcast({"type": "model_test_result", "ok": ok, "text": msg})
+            elif kind == "provider_models":
+                key = (m.get("api_key") or "").strip() or (models.get_key(m["id"]) if m.get("id") else "")
+                ok, items, err = await bridge.list_models(m.get("provider", ""), key, m.get("base_url", ""))
+                await self._broadcast({"type": "provider_models", "ok": ok, "items": items[:500], "error": err,
+                                       "provider": m.get("provider")})
             elif kind == "ollama_tags":
                 names = []
                 try:
@@ -343,6 +357,53 @@ class WebUI:
             await self._broadcast({"type": "toast", "text": str(e), "error": True})
         except Exception as e:
             log.exception("model action failed")
+            await self._broadcast({"type": "toast", "text": f"Something went wrong: {str(e)[:200]}", "error": True})
+
+    async def _local_done(self, name: str) -> None:
+        """A local model finished downloading: add it to the model list."""
+        reg = self.brain.registry
+        existing = next((x for x in reg.models if x["provider"] == "ollama" and x["model"] == name), None)
+        if not existing:
+            existing = reg.save_model({"provider": "ollama", "model": name, "label": name,
+                                       "context_tokens": config.OLLAMA_CONTEXT})
+        if self.brain.client is None:
+            await self.brain.switch_model(existing["id"])
+        await self.push_models()
+        await self._broadcast({"type": "toast", "text": f"{name} is ready. Pick it in the model menu to chat."})
+
+    async def _on_local(self, m: dict) -> None:
+        kind = m.get("type")
+        try:
+            if kind == "local_status":
+                await self._broadcast({"type": "local_status", **(await self.local.status())})
+            elif kind == "local_install":
+                asyncio.ensure_future(self.local.install())
+            elif kind == "local_start":
+                asyncio.ensure_future(self.local.start())
+            elif kind == "local_pull":
+                name = (m.get("name") or "").strip()
+                if not name:
+                    raise ValueError("Enter a model name, for example gemma4:12b.")
+                self.local.pull(name, self._local_done)
+                await self._broadcast({"type": "local_status", **(await self.local.status())})
+            elif kind == "local_cancel":
+                self.local.cancel(m.get("name", ""))
+            elif kind == "local_delete":
+                name = m.get("name", "")
+                await self.local.delete(name)
+                reg = self.brain.registry
+                for x in [x for x in reg.models if x["provider"] == "ollama" and x["model"] == name]:
+                    if len(reg.models) > 1:
+                        was_active = reg.active == x["id"]
+                        reg.delete(x["id"])
+                        if was_active:
+                            await self.brain.switch_model(reg.active)
+                await self.push_models()
+                await self._broadcast({"type": "toast", "text": f"Removed {name}"})
+        except ValueError as e:
+            await self._broadcast({"type": "toast", "text": str(e), "error": True})
+        except Exception as e:
+            log.exception("local model action failed")
             await self._broadcast({"type": "toast", "text": f"Something went wrong: {str(e)[:200]}", "error": True})
 
     async def upload(self, request: web.Request):

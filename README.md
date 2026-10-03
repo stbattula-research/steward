@@ -39,29 +39,37 @@ Then open the `steward` folder in Finder and **double-click `Start Steward.comma
 
 > If macOS says the file "can't be opened", right-click it → **Open** → **Open**. This only happens for downloaded ZIPs, not git clones.
 
-The first run takes about 10–20 minutes, mostly downloading the model. It will:
+The first run takes about 5–15 minutes. It will:
 
-1. **Ask a few questions:** your name, a name for your agent, which brain to use, and optionally a Telegram bot.
-2. **Install what's missing:** Homebrew, Python 3.12, Node, ffmpeg, cliclick, Ollama and the model you chose, Playwright, and on-device Whisper.
+1. **Ask a few simple questions:** your name, a name for your agent, whether to download the free local model now (it suggests one for your Mac's memory), and optionally a Telegram bot. No API keys in the Terminal.
+2. **Install what's missing:** Homebrew, Python 3.12, Node, ffmpeg, cliclick, Ollama and a model (if you said yes), Playwright, and on-device Whisper.
 3. **Start Steward in the background:** it restarts on crashes and starts at login.
-4. **Create the Steward app** in `~/Applications` and open it. Drag the app to your Dock.
+4. **Build the Steward Mac app** in `~/Applications`, open it, and offer to add it to your **Dock**. You can also find it in **Spotlight** (⌘ Space → "Steward") or Launchpad.
 
-The first reply takes about a minute while the model warms up. After that, open the app anytime, or message your Telegram bot.
+After that you never need the Terminal again: just open **Steward** like any other app.
 
-To change the brain, name or Telegram later, double-click **`Configure Steward.command`**. To remove Steward, use **`Uninstall Steward.command`**.
+To change your name or Telegram later, double-click **`Configure Steward.command`**. To remove Steward, use **`Uninstall Steward.command`**.
 
 ---
 
-## Choose your brain
+## The Steward app
 
-| Option | Best for | Cost | Privacy | Notes |
-|---|---|---|---|---|
-| **Local (Ollama)** | Trying it out, privacy, simple tasks | Free | Nothing leaves your Mac | The wizard picks a model for your RAM: 8 GB → `gemma4:e4b`, 16 GB → `gemma4:12b`, 40 GB+ → `gemma4:26b`. Slower and less reliable on long multi-step tasks. |
-| **Claude (Anthropic API)** | Complex, multi-step tasks across websites | Pay per use | Requests go to Anthropic | Get a key at [console.anthropic.com](https://console.anthropic.com) and set a monthly spend limit. Per-task cap: `MAX_BUDGET_USD`. |
-| **Ollama Cloud** | Big open models without the RAM | Ollama plan | Requests go to Ollama | Key at [ollama.com/settings/keys](https://ollama.com/settings/keys). |
-| **Custom** | Your own gateway, or OpenRouter | Varies | Varies | Any endpoint that speaks the Anthropic Messages API (`BRAIN_BASE_URL`, `BRAIN_API_KEY`, `BRAIN_MODEL`), e.g. OpenRouter at `https://openrouter.ai/api`. Set `BRAIN_CONTEXT_TOKENS` to the model's context size. Free tiers allow only a few dozen requests a day, and one browser task can use 20–30. |
+Steward is a real Mac app with its own window, Dock icon, menus and notifications, not a browser tab. It talks only to the agent running on your Mac (`127.0.0.1`).
 
-All four use the same agent loop, tools and safety rules (built on the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview)). Ollama provides an [Anthropic-compatible API](https://docs.ollama.com/integrations/claude-code), which is why local models work too.
+The first time you open it, a short **welcome** screen asks how you want to power it:
+
+- **Free, on this Mac:** one click installs Ollama (if needed) and downloads the model that suits your Mac, with a progress bar.
+- **Use an online AI service:** pick a provider, paste your API key, choose a model from the list, and start chatting.
+
+You can change this any time in **Models** (sidebar, or the model picker in the chat box), which has three tabs:
+
+| Tab | What it does |
+|---|---|
+| **Connect a provider** | Provider cards with a link to get a key. Paste the key, Steward checks it, and shows the provider's models to pick from. |
+| **Local models** | Shows whether Ollama is installed and running, with **Install** / **Start** buttons. Recommended models for your Mac's memory download with one click (progress bar, cancel). Installed models can be used or removed. |
+| **My models** | Everything you've added: switch, rename, test, remove, and choose which model runs scheduled tasks. |
+
+If the native app can't be built (for example, Xcode Command Line Tools are missing), the installer falls back to a Steward app that opens in a Chrome app window. The build log is at `~/.steward/app-build.log`.
 
 ---
 
@@ -159,7 +167,7 @@ Settings live in `.env`. The wizard writes it; `.env.example` documents every op
 
 | Setting | Default | What it does |
 |---|---|---|
-| `BRAIN_PROVIDER` | `ollama` | `ollama`, `anthropic`, `ollama-cloud` or `custom` |
+| `BRAIN_PROVIDER` | `ollama` | First model on a fresh install: `ollama`, or `none` to add models in the app. Models you add in the app are kept in `~/.steward/models.json` (keys in the Keychain). |
 | `OLLAMA_MODEL` | by RAM | Any local model with tool calling |
 | `AGENT_NAME` / `AGENT_AVATAR` | `Steward` / `droid` | Name and face in the app (`droid`, `cat`, `ghost`, `cloud`, `star`, …) |
 | `HEARTBEAT_MINUTES` | `60` | How often the watchlist is checked (`0` = off) |
@@ -202,10 +210,12 @@ scheduler.py (tasks, watchlist) ────────────────
 | Problem | Fix |
 |---|---|
 | "This task is too big for the local model's memory" | Long browser tasks can outgrow a local model's context. Steward now summarises older steps and retries automatically. If it still fails, split the task, raise `OLLAMA_CONTEXT_LENGTH` (uses more RAM), or use a larger brain. |
-| First reply is slow | Normal for local models while the model warms up (about 1 minute after start). Smaller model: `Configure Steward.command`. For complex tasks, use Claude. |
+| First reply is slow | Normal for local models while the model warms up (about 1 minute after start). Pick a smaller model in **Models → Local models**, or connect a hosted provider for complex tasks. |
 | "Reconnecting…" in the app | Steward isn't running. Double-click `Start Steward.command`, and check `~/.steward/stderr.log`. |
 | Screenshots are blank, or clicks don't work | System Settings → Privacy & Security → allow **Screen Recording** and **Accessibility** for `.venv/bin/python` (and Terminal). |
-| "Ollama isn't reachable" | Open the Ollama app or run `brew services start ollama`. |
+| "Ollama isn't reachable" | **Models → Local models → Start**, or run `brew services start ollama`. |
+| The Steward app shows "Waiting for Steward…" | It retries and restarts the agent for you. If it keeps waiting, double-click `Start Steward.command`. |
+| No Steward icon in the Dock | Open `~/Applications/Steward.app` and choose Options → Keep in Dock, or search Spotlight for "Steward". |
 | The Mac sleeps and Steward stops answering | Steward keeps the Mac awake while it's on, but closing the lid sleeps it (unless it's plugged into power and an external display). |
 | Logs | `tail -f ~/.steward/agent.log` (passwords are redacted) |
 

@@ -12,6 +12,11 @@ import ModelsPanel, { ModelPicker } from './ModelsPanel.jsx';
 
 marked.setOptions({ breaks: true, gfm: true });
 
+/* ----------------------------------------------------------------- native -- */
+// Inside the Steward Mac app, the page can ask the app for native notifications etc.
+const native = typeof window !== 'undefined' && window.webkit?.messageHandlers?.steward;
+const toNative = (msg) => { try { native?.postMessage(msg); } catch { /* not in the app */ } };
+
 /* ------------------------------------------------------------------ theme -- */
 // Appearance: 'auto' follows the Mac; 'light' / 'dark' pin it. The resolved value is
 // passed to the libraries.dev components so their glows match the page.
@@ -33,6 +38,7 @@ function useResolvedTheme(pref) {
     if (pref === 'light' || pref === 'dark') root.dataset.theme = pref; else delete root.dataset.theme;
     try { localStorage.setItem('steward-theme', pref || 'auto'); } catch { /* storage unavailable */ }
     document.querySelector('meta[name=theme-color]')?.setAttribute('content', resolved === 'light' ? '#f7f7f5' : '#121212');
+    toNative({ type: 'theme', bg: resolved === 'light' ? '#f7f7f5' : '#121212', dark: resolved !== 'light' });
   }, [pref, resolved]);
   return resolved;
 }
@@ -319,7 +325,7 @@ function Composer({ busy, connected, onSend, onStop, models, send, onManageModel
               <button className={`icon-btn ${voice === 'recording' ? 'live' : ''}`} title={voice === 'recording' ? 'Stop recording' : 'Voice'} onClick={toggleMic} disabled={voice === 'transcribing'}>
                 <Icon name={voice === 'recording' ? 'stop' : 'mic'} />
               </button>
-              {models.items.length > 0 && <ModelPicker models={models} busy={busy} send={send} onManage={onManageModels} />}
+              <ModelPicker models={models} busy={busy} send={send} onManage={onManageModels} />
             </div>
             <div className="right">
               {busy && <button className="btn ghost sm" onClick={onStop}><Icon name="stop" size={12} /> Stop</button>}
@@ -464,11 +470,41 @@ function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, o
   );
 }
 
+function Welcome({ info, models, onLocal, onConnect, onSkip }) {
+  const theme = useTheme();
+  return (
+    <div className="modal-scrim">
+      <div className="welcome" role="dialog" aria-label="Welcome">
+        <BotAvatar type={info.avatar} state="default" face="mouth" size={96} theme={theme} />
+        <h2>Welcome to {info.agent}</h2>
+        <p className="muted">Your agent works on this Mac. First, choose what powers it. You can add more models any time.</p>
+        <div className="welcome-options">
+          <button className="welcome-card" onClick={onLocal}>
+            <span className="welcome-tag">Free · private</span>
+            <b>Run a model on this Mac</b>
+            <span className="muted small">Nothing leaves your computer. Best for everyday tasks. One-click download.</span>
+          </button>
+          <button className="welcome-card" onClick={onConnect}>
+            <span className="welcome-tag accent">Most capable</span>
+            <b>Connect an AI provider</b>
+            <span className="muted small">Claude, OpenAI, Gemini and more. Paste an API key and pick a model.</span>
+          </button>
+        </div>
+        <button className="link-btn" onClick={onSkip}>{models.items.length ? 'Keep my current model' : 'I’ll do this later'}</button>
+      </div>
+    </div>
+  );
+}
+
 /* -------------------------------------------------------------------- app -- */
 
 export default function App() {
   const { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send } = useAgent();
   const [modelsOpen, setModelsOpen] = useState(false);
+  const [modelsTab, setModelsTab] = useState(null);
+  const openModels = (tab) => { setModelsTab(tab || null); setModelsOpen(true); };
+  const welcome = connected && prefs.onboarded === false && !modelsOpen;
+  const finishWelcome = () => send({ type: 'set_pref', key: 'onboarded', value: true });
   const [sideOpen, setSideOpen] = useState(false);
   const [memOpen, setMemOpen] = useState(false);
   const theme = useResolvedTheme(prefs.theme);
@@ -493,16 +529,19 @@ export default function App() {
   useEffect(() => {                         // desktop notification when the window isn't focused
     const onEv = (e) => {
       const ev = e.detail;
-      if (document.hasFocus() || !('Notification' in window) || Notification.permission !== 'granted') return;
-      if (ev.type === 'approval') new Notification(`${info.agent} needs your approval`, { body: ev.summary.slice(0, 140) });
-      else if (ev.type === 'message' && ev.role === 'assistant') new Notification(info.agent, { body: ev.text.slice(0, 140) });
+      if (document.hasFocus()) return;
+      const n = ev.type === 'approval' ? { title: `${info.agent} needs your approval`, body: ev.summary.slice(0, 140) }
+        : ev.type === 'message' && ev.role === 'assistant' ? { title: info.agent, body: ev.text.slice(0, 140) } : null;
+      if (!n) return;
+      if (native) toNative({ type: 'notify', ...n });
+      else if ('Notification' in window && Notification.permission === 'granted') new Notification(n.title, { body: n.body });
     };
     window.addEventListener('agent-event', onEv);
     return () => window.removeEventListener('agent-event', onEv);
   }, [info.agent]);
 
   function sendText(text) {
-    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+    if (!native && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission();
     stick.current = true;
     send({ type: 'send', text });
   }
@@ -514,8 +553,12 @@ export default function App() {
         onClose={() => setSideOpen(false)} prefs={prefs}
         onMemory={() => { setMemOpen(true); setSideOpen(false); send({ type: 'memory_get' }); }}
         memoryCount={memory.files.length}
-        onModels={() => { setModelsOpen(true); setSideOpen(false); }} modelCount={models.items.length} />
-      {modelsOpen && <ModelsPanel models={models} send={send} onClose={() => setModelsOpen(false)} />}
+        onModels={() => { openModels(); setSideOpen(false); }} modelCount={models.items.length} />
+      {modelsOpen && <ModelsPanel models={models} send={send} initialTab={modelsTab} onClose={() => setModelsOpen(false)} />}
+      {welcome && <Welcome info={info} models={models}
+        onLocal={() => { finishWelcome(); openModels('local'); }}
+        onConnect={() => { finishWelcome(); openModels('connect'); }}
+        onSkip={finishWelcome} />}
       {memOpen && <MemoryPanel memory={memory} send={send} onClose={() => setMemOpen(false)} />}
       {toast && <div key={toast.key} className={`toast ${toast.error ? 'err' : ''}`} role="status">{toast.text}</div>}
       {sideOpen && <div className="scrim" onClick={() => setSideOpen(false)} />}
@@ -559,7 +602,7 @@ export default function App() {
         </div>
 
         <Composer busy={status.busy} connected={connected} onSend={sendText} onStop={() => send({ type: 'stop' })}
-          models={models} send={send} onManageModels={() => setModelsOpen(true)} />
+          models={models} send={send} onManageModels={() => openModels(models.items.length ? null : 'local')} />
       </main>
     </div>
     </ThemeCtx.Provider>

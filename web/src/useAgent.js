@@ -40,6 +40,10 @@ export function useAgent() {
         case 'model_test_result':
         case 'ollama_tags':
         case 'model_saved':
+        case 'local_status':
+        case 'local_progress':
+        case 'local_log':
+        case 'provider_models':
           window.dispatchEvent(new CustomEvent('agent-' + ev.type, { detail: ev })); break;
         case 'history': setEvents(ev.events); break;
         case 'status':

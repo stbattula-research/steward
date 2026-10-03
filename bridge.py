@@ -186,3 +186,73 @@ async def test_model(m: dict, key: str | None = None) -> tuple[bool, str]:
         return True, f"Connected in {time.time() - t0:.1f}s."
     except Exception as e:
         return False, f"Couldn't connect: {e}"
+
+
+# ------------------------------------------------------------ model lists --
+# Where each provider lists its models (this also checks that the key works).
+_LIST_URLS = {
+    "anthropic": "https://api.anthropic.com/v1/models?limit=100",
+    "openrouter": "https://openrouter.ai/api/v1/models",
+    "deepseek": "https://api.deepseek.com/models",
+    "ollama-cloud": "https://ollama.com/api/tags",
+}
+
+
+async def list_models(provider: str, key: str, base: str = "") -> tuple[bool, list[dict], str]:
+    """Returns (ok, [{id, note}], error). Used by "Connect a provider" so people pick from a
+    list instead of typing model IDs."""
+    p = models.PROVIDERS.get(provider)
+    if not p:
+        return False, [], "Unknown provider."
+    if p["kind"] == "openai":
+        url = (base or p["base"]).rstrip("/") + "/models"
+    elif provider in _LIST_URLS:
+        url = _LIST_URLS[provider]
+    else:
+        url = (base or p["base"]).rstrip("/") + "/v1/models"
+    headers = {"anthropic-version": "2023-06-01"}
+    if provider == "anthropic":
+        headers["x-api-key"] = key
+    elif key:
+        headers["Authorization"] = f"Bearer {key}"
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
+            r = await s.get(url, headers=headers)
+            text = await r.text()
+            if r.status in (401, 403):
+                return False, [], "That key wasn't accepted. Check you copied all of it."
+            if r.status >= 400:
+                return False, [], f"{p['label']} replied with an error ({r.status})."
+            data = json.loads(text)
+    except Exception as e:
+        return False, [], f"Couldn't reach {p['label']}: {e}"
+    if provider == "openrouter" and key:
+        # The model list is public, so check the key separately.
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
+                r = await s.get("https://openrouter.ai/api/v1/key", headers=headers)
+                if r.status in (401, 403):
+                    return False, [], "That key wasn't accepted. Check you copied all of it."
+        except Exception:
+            pass
+    items = data.get("data") or data.get("models") or []
+    out = []
+    for m in items:
+        mid = m.get("id") or m.get("name") or m.get("model") or ""
+        mid = mid.removeprefix("models/")              # Gemini lists "models/<id>"
+        if not mid:
+            continue
+        note = m.get("display_name") or ""
+        if provider == "openrouter":
+            pricing = m.get("pricing") or {}
+            if str(pricing.get("prompt", "1")) in ("0", "0.0") and str(pricing.get("completion", "1")) in ("0", "0.0"):
+                note = "free"
+            if "tools" not in (m.get("supported_parameters") or ["tools"]):
+                continue                                 # Steward needs tool calling
+        if provider == "gemini" and any(x in mid for x in ("embedding", "imagen", "veo", "tts", "aqa")):
+            continue
+        out.append({"id": mid, "note": note})
+    out.sort(key=lambda x: x["id"])
+    if not out:
+        return False, [], "The key works, but no models were listed. You can type a model ID instead."
+    return True, out, ""

@@ -128,11 +128,11 @@ class Registry:
         if self.FILE.exists():
             data = json.loads(self.FILE.read_text())
             self.models, self.active, self.background = data["models"], data.get("active", ""), data.get("background", "")
-        if not self.models:
+        if not self.models and config.BRAIN_PROVIDER != "none":
             self._seed_from_env()
         ids = [m["id"] for m in self.models]
         if self.active not in ids:
-            self.active = ids[0]
+            self.active = ids[0] if ids else ""
         if self.background not in ids:
             self.background = self.active
         self.save()
@@ -171,10 +171,10 @@ class Registry:
     def get(self, model_id: str) -> dict | None:
         return next((m for m in self.models if m["id"] == model_id), None)
 
-    def active_model(self) -> dict:
-        return self.get(self.active) or self.models[0]
+    def active_model(self) -> dict | None:
+        return self.get(self.active) or (self.models[0] if self.models else None)
 
-    def background_model(self) -> dict:
+    def background_model(self) -> dict | None:
         return self.get(self.background) or self.active_model()
 
     def has_key(self, model_id: str) -> bool:
@@ -222,6 +222,8 @@ class Registry:
             if not existing:
                 self.models.remove(m)
             raise ValueError(f"{p['label']} needs an API key.")
+        if not self.active:                      # first model ever: use it everywhere
+            self.active = self.background = m["id"]
         self.save()
         return m
 

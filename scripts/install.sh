@@ -11,7 +11,7 @@ envget() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2-; }
 
 # ---------------------------------------------------------------- checks ---
 [ "$(uname)" = "Darwin" ] || { echo "Steward runs on macOS."; exit 1; }
-case "$DIR" in *"'"*|*'"'*) echo "Please move this folder to a path without quote characters."; exit 1;; esac
+case "$DIR" in *"'"*|*'"'*|*"&"*|*"<"*|*">"*|*"|"*) echo "Please move this folder to a path without quotes or & < > | in it."; exit 1;; esac
 
 # --------------------------------------------------- migrate older installs ---
 for OLD in com.saiteja.myagent; do
@@ -29,12 +29,12 @@ rm -rf "$HOME/Applications/My Agent.app"
 
 # --------------------------------------------------------------- homebrew ---
 if ! command -v brew >/dev/null 2>&1; then
-  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$b" ] && eval "$("$b" shellenv)"; done
+  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do if [ -x "$b" ]; then eval "$("$b" shellenv)"; fi; done
 fi
 if ! command -v brew >/dev/null 2>&1; then
   step "Installing Homebrew (the standard macOS package manager). It will ask for your Mac password."
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$b" ] && eval "$("$b" shellenv)"; done
+  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do if [ -x "$b" ]; then eval "$("$b" shellenv)"; fi; done
 fi
 BREW_PREFIX="$(brew --prefix)"
 
@@ -77,14 +77,15 @@ fi
 npx -y @playwright/mcp@latest --help >/dev/null
 
 # ------------------------------------------------------------------ brain ---
+# The agent's instructions and tools need a large context window; keep the model loaded
+# between messages. Set even without Ollama, so installing it later from the app just works.
+CTX=$(envget OLLAMA_CONTEXT_LENGTH); CTX=${CTX:-65536}
+launchctl setenv OLLAMA_CONTEXT_LENGTH "$CTX"
+launchctl setenv OLLAMA_KEEP_ALIVE 30m
 PROVIDER=$(envget BRAIN_PROVIDER); PROVIDER=${PROVIDER:-ollama}
 if [ "$PROVIDER" = "ollama" ]; then
   MODEL=$(envget OLLAMA_MODEL); MODEL=${MODEL:-gemma4:12b}
   step "Local model: Ollama + $MODEL"
-  # The agent's instructions and tools need a large context window; keep the model loaded between messages.
-  CTX=$(envget OLLAMA_CONTEXT_LENGTH); CTX=${CTX:-65536}
-  launchctl setenv OLLAMA_CONTEXT_LENGTH "$CTX"
-  launchctl setenv OLLAMA_KEEP_ALIVE 30m
   if [ -d "/Applications/Ollama.app" ]; then
     echo "   Using the Ollama app (restarting it so the settings apply)."
     osascript -e 'quit app "Ollama"' >/dev/null 2>&1 || true; sleep 3; open -a Ollama
@@ -97,7 +98,7 @@ if [ "$PROVIDER" = "ollama" ]; then
   echo "   Downloading the model if needed (several GB the first time)…"
   "$OLLAMA_BIN" pull "$MODEL"
 else
-  step "Brain: $PROVIDER (no local model needed)"
+  step "No local model for now (add one any time in the app: Models)"
 fi
 
 # --------------------------------------------------------------- service ---
@@ -143,17 +144,60 @@ echo "   Running."
 
 # ------------------------------------------------------------ mac app -----
 AGENT_NAME=$(envget AGENT_NAME); AGENT_NAME=${AGENT_NAME:-Steward}
-APP="$HOME/Applications/$AGENT_NAME.app"
+SAFE_NAME=$(printf '%s' "$AGENT_NAME" | tr -d '/:<>&"' )
+APP="$HOME/Applications/$SAFE_NAME.app"
 step "Creating the $AGENT_NAME app"
 mkdir -p "$HOME/Applications"
-[ -f "$STATE/app_path" ] && [ "$(cat "$STATE/app_path")" != "$APP" ] && rm -rf "$(cat "$STATE/app_path")"
-osacompile -o "$APP" \
-  -e "set u to do shell script \"cd '$DIR' && .venv/bin/python main.py --url\"" \
-  -e 'try' \
-  -e '  do shell script "open -na \"Google Chrome\" --args --app=" & quoted form of u' \
-  -e 'on error' \
-  -e '  open location u' \
-  -e 'end try'
-[ -f web/public/AppIcon.icns ] && cp web/public/AppIcon.icns "$APP/Contents/Resources/applet.icns" && touch "$APP"
+if [ -f "$STATE/app_path" ] && [ "$(cat "$STATE/app_path")" != "$APP" ]; then rm -rf "$(cat "$STATE/app_path")"; fi
+
+build_native_app() {
+  # A real Mac app (window, Dock icon, menus, notifications) compiled from app/Steward.swift.
+  command -v swiftc >/dev/null 2>&1 || return 1
+  local tmp; tmp=$(mktemp -d)
+  local bundle="$tmp/Steward.app"
+  mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+  swiftc -O -target "$(uname -m)-apple-macos12.0" app/Steward.swift -o "$bundle/Contents/MacOS/Steward" \
+    -framework Cocoa -framework WebKit -framework UserNotifications 2>"$STATE/app-build.log" || return 1
+  sed -e "s|__NAME__|$SAFE_NAME|g" -e "s|__DIR__|$DIR|g" app/Info.plist.template > "$bundle/Contents/Info.plist"
+  cp app/AppIcon.icns "$bundle/Contents/Resources/AppIcon.icns"
+  plutil -lint -s "$bundle/Contents/Info.plist" || return 1
+  codesign --force --deep -s - "$bundle" >/dev/null 2>&1 || true
+  rm -rf "$APP" && mv "$bundle" "$APP" && rm -rf "$tmp"
+}
+
+build_browser_app() {
+  # Fallback: opens the app in a Chrome app window (or your default browser).
+  osacompile -o "$APP" \
+    -e "set u to do shell script \"cd '$DIR' && .venv/bin/python main.py --url\"" \
+    -e 'try' \
+    -e '  do shell script "open -na \"Google Chrome\" --args --app=" & quoted form of u' \
+    -e 'on error' \
+    -e '  open location u' \
+    -e 'end try'
+  cp app/AppIcon.icns "$APP/Contents/Resources/applet.icns" 2>/dev/null || true
+  touch "$APP"
+}
+
+if build_native_app; then
+  echo "   Built the native app."
+else
+  echo "   Couldn't build the native app (details: ~/.steward/app-build.log); using a browser window instead."
+  build_browser_app
+fi
 echo "$APP" > "$STATE/app_path"
-echo "   $APP (drag it to your Dock to keep it handy)"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" >/dev/null 2>&1 || true
+
+# Offer a Dock shortcut once.
+if [ ! -f "$STATE/dock_asked" ]; then
+  touch "$STATE/dock_asked"
+  read -r -p "   Add $AGENT_NAME to your Dock? [Y/n] " dock
+  case "$dock" in
+    n|N|no|No) echo "   Skipped. You'll find $AGENT_NAME in Applications and Spotlight (Cmd+Space)." ;;
+    *)
+      defaults write com.apple.dock persistent-apps -array-add \
+        "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$APP</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
+      killall Dock 2>/dev/null || true
+      echo "   Added to your Dock." ;;
+  esac
+fi
+echo "   Open it any time from the Dock, Applications, or Spotlight (Cmd+Space, type $AGENT_NAME)."

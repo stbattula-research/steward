@@ -5,7 +5,7 @@ import { Icon } from './icons.jsx';
 const GROUPS = ['On this Mac', 'Claude-compatible', 'OpenAI-compatible', 'Other'];
 const EMPTY = { id: '', provider: 'ollama', label: '', model: '', base_url: '', context_tokens: '', api_key: '' };
 
-function useAgentEvent(name, fn) {
+export function useAgentEvent(name, fn) {
   const ref = useRef(fn);
   ref.current = fn;
   useEffect(() => {
@@ -42,6 +42,16 @@ export function ModelPicker({ models, busy, send, onManage }) {
     return () => { window.removeEventListener('mousedown', close); window.removeEventListener('keydown', esc); };
   }, [open]);
 
+  if (models.items.length === 0) {
+    return (
+      <div className="model-picker">
+        <button className="model-chip setup" onClick={onManage}>
+          <Icon name="plus" size={12} /><span className="model-chip-label">Set up a model</span>
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="model-picker" ref={box}>
       <button className="model-chip" onClick={toggle} aria-haspopup="menu" aria-expanded={open}
@@ -76,9 +86,9 @@ export function ModelPicker({ models, busy, send, onManage }) {
   );
 }
 
-/** Full panel: add, edit, test and remove models. */
-export default function ModelsPanel({ models, send, onClose }) {
-  const [selected, setSelected] = useState(models.active || 'new');
+/** "My models" tab: edit, test and remove models (advanced). */
+function MyModels({ models, send, onClose, startNew }) {
+  const [selected, setSelected] = useState(startNew ? 'new' : (models.active || 'new'));
   const [form, setForm] = useState(EMPTY);
   const [background, setBackground] = useState(false);
   const [test, setTest] = useState(null);          // {state: 'running'|'ok'|'fail', text}
@@ -107,27 +117,12 @@ export default function ModelsPanel({ models, send, onClose }) {
   useAgentEvent('agent-model_test_result', (ev) => setTest({ state: ev.ok ? 'ok' : 'fail', text: ev.text }));
   useAgentEvent('agent-model_saved', (ev) => setSelected(ev.id));
 
-  useEffect(() => {
-    const esc = (e) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', esc);
-    return () => window.removeEventListener('keydown', esc);
-  }, [onClose]);
-
   const grouped = useMemo(() => GROUPS.map((g) => [g, Object.entries(providers).filter(([, p]) => p.group === g)]), [providers]);
   const suggestions = form.provider === 'ollama' ? tags : (prov.examples || []);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const payload = () => ({ ...form, context_tokens: Number(form.context_tokens) || 0 });
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" role="dialog" aria-label="Models">
-        <div className="modal-head">
-          <div>
-            <div className="modal-title">Models</div>
-            <div className="muted small">Add any model you have access to, then pick one for each chat. API keys are stored in your Mac's Keychain.</div>
-          </div>
-          <button className="icon-btn" onClick={onClose} aria-label="Close"><Icon name="x" /></button>
-        </div>
         <div className="modal-body">
           <nav className="mem-nav">
             {models.items.map((m) => (
@@ -234,6 +229,304 @@ export default function ModelsPanel({ models, send, onClose }) {
             </div>
           </section>
         </div>
+  );
+}
+
+
+/* ------------------------------------------------------------------------ */
+/* Connect a provider: pick a card, paste a key, choose from the model list.  */
+/* ------------------------------------------------------------------------ */
+const CARD_ORDER = ['anthropic', 'openai', 'gemini', 'openrouter', 'deepseek', 'groq', 'mistral', 'nvidia', 'ollama-cloud', 'custom-anthropic', 'custom-openai'];
+const CARD_BLURB = {
+  anthropic: 'Claude. Best at long, multi-step tasks.',
+  openai: 'GPT models from OpenAI.',
+  gemini: 'Google’s models. Has a free tier.',
+  openrouter: 'One key for hundreds of models.',
+  deepseek: 'Capable and low-cost.',
+  groq: 'Very fast open models.',
+  mistral: 'European models.',
+  nvidia: 'Open models on NVIDIA’s cloud.',
+  'ollama-cloud': 'Big open models, hosted.',
+  'custom-anthropic': 'Any Claude-format endpoint.',
+  'custom-openai': 'Any OpenAI-format endpoint.',
+};
+
+function ConnectProvider({ models, send, onDone }) {
+  const providers = models.providers || {};
+  const [pid, setPid] = useState(null);
+  const [key, setKey] = useState('');
+  const [base, setBase] = useState('');
+  const [phase, setPhase] = useState('key');        // key | loading | pick
+  const [error, setError] = useState('');
+  const [list, setList] = useState([]);
+  const [query, setQuery] = useState('');
+  const [chosen, setChosen] = useState('');
+  const [manual, setManual] = useState(false);
+  const [background, setBackground] = useState(false);
+  const p = providers[pid] || {};
+  const custom = pid?.startsWith('custom');
+
+  useAgentEvent('agent-provider_models', (ev) => {
+    if (ev.provider !== pid) return;
+    if (ev.ok) { setList(ev.items); setPhase('pick'); setError(''); setManual(false); }
+    else { setError(ev.error); setPhase('key'); }
+  });
+  useAgentEvent('agent-model_saved', () => onDone());
+
+  function choose(id) { setPid(id); setKey(''); setBase(''); setPhase('key'); setError(''); setList([]); setQuery(''); setChosen(''); setManual(false); }
+  function check() {
+    if (!key.trim()) { setError('Paste your API key first.'); return; }
+    if (custom && !/^https?:\/\//.test(base)) { setError('Enter the base URL, starting with https://'); return; }
+    setPhase('loading'); setError('');
+    send({ type: 'provider_models', provider: pid, api_key: key.trim(), base_url: base.trim() });
+  }
+  function save() {
+    if (!chosen.trim()) { setError('Choose a model.'); return; }
+    send({ type: 'model_save', use_now: true, background,
+           model: { provider: pid, model: chosen.trim(), label: '', base_url: base.trim(), api_key: key.trim() } });
+  }
+
+  const filtered = list.filter((m) => m.id.toLowerCase().includes(query.toLowerCase())).slice(0, 200);
+
+  if (!pid) {
+    return (
+      <div className="tab-pane">
+        <p className="pane-intro">Pick the AI service you have an account with. You’ll paste an API key, then choose a model from its list.</p>
+        <div className="provider-grid">
+          {CARD_ORDER.filter((id) => providers[id]).map((id) => (
+            <button key={id} className="provider-card" onClick={() => choose(id)}>
+              <span className="provider-name">{providers[id].label}</span>
+              <span className="provider-blurb">{CARD_BLURB[id]}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tab-pane narrow">
+      <button className="back-link" onClick={() => setPid(null)}><Icon name="chevron" size={12} className="chev-back" /> All providers</button>
+      <h3 className="pane-title">Connect {p.label}</h3>
+      {p.help && <p className="muted small">{p.help}</p>}
+
+      <ol className="steps-guide">
+        {p.keys_url && (
+          <li>
+            <span className="step-n">1</span>
+            <div><div>Get an API key from {p.label}</div>
+              <a className="btn ghost sm" href={p.keys_url} target="_blank" rel="noreferrer">Open {p.label} ↗</a>
+            </div>
+          </li>
+        )}
+        <li>
+          <span className="step-n">{p.keys_url ? 2 : 1}</span>
+          <div className="grow">
+            {custom && (
+              <label className="field"><span>Base URL</span>
+                <input value={base} onChange={(e) => setBase(e.target.value)} placeholder={pid === 'custom-openai' ? 'https://api.example.com/v1' : 'https://api.example.com'} spellCheck={false} />
+              </label>
+            )}
+            <label className="field"><span>Paste your API key</span>
+              <input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && check()} placeholder="It’s stored in your Mac’s Keychain" />
+            </label>
+            {phase !== 'pick' && (
+              <button className="btn primary sm" onClick={check} disabled={phase === 'loading'}>
+                {phase === 'loading' ? 'Checking…' : 'Continue'}
+              </button>
+            )}
+          </div>
+        </li>
+        {(phase === 'pick' || manual) && (
+          <li>
+            <span className="step-n">{p.keys_url ? 3 : 2}</span>
+            <div className="grow">
+              <div>Choose a model</div>
+              {!manual ? (
+                <>
+                  <input className="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${list.length} models`} />
+                  <div className="model-list" role="listbox">
+                    {filtered.map((m) => (
+                      <button key={m.id} role="option" aria-selected={chosen === m.id} className={`model-row ${chosen === m.id ? 'on' : ''}`} onClick={() => setChosen(m.id)}>
+                        <span>{m.id}</span>{m.note && <span className={`note ${m.note === 'free' ? 'free' : ''}`}>{m.note}</span>}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <label className="field"><span>Model ID</span>
+                  <input value={chosen} onChange={(e) => setChosen(e.target.value)} spellCheck={false}
+                    placeholder={(p.examples || [])[0] || 'From the provider’s model list'} />
+                </label>
+              )}
+              <label className="check"><input type="checkbox" checked={background} onChange={(e) => setBackground(e.target.checked)} />
+                <span>Also use it for scheduled tasks and heads-ups</span></label>
+              <button className="btn primary" onClick={save}>Add and start chatting</button>
+            </div>
+          </li>
+        )}
+      </ol>
+      {error && (
+        <div className="test-result fail">
+          {error}
+          {!manual && <> <button className="link-btn" onClick={() => { setManual(true); setError(''); }}>Type a model ID instead</button></>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Local models: install Ollama, download recommended models, remove them.    */
+/* ------------------------------------------------------------------------ */
+function LocalModels({ models, send }) {
+  const [st, setSt] = useState(null);
+  const [progress, setProgress] = useState({});
+  const [log, setLog] = useState([]);
+  const [custom, setCustom] = useState('');
+  const [confirm, setConfirm] = useState(null);
+
+  useEffect(() => { send({ type: 'local_status' }); }, [send]);
+  useAgentEvent('agent-local_status', (ev) => setSt(ev));
+  useAgentEvent('agent-local_log', (ev) => setLog((l) => [...l.slice(-6), ev.text]));
+  useAgentEvent('agent-local_progress', (ev) => setProgress((p) => ({ ...p, [ev.name]: ev })));
+
+  if (!st) return <div className="tab-pane muted">Checking this Mac…</div>;
+  const have = new Set(st.models.map((m) => m.name));
+  const inList = (name) => models.items.find((m) => m.provider === 'ollama' && m.model === name);
+
+  function Bar({ name }) {
+    const pr = progress[name];
+    if (!pr || ['success', 'cancelled'].includes(pr.status)) return null;
+    if (pr.status === 'error') return <div className="test-result fail">{pr.error}</div>;
+    return (
+      <div className="dl">
+        <div className="dl-bar"><div style={{ width: `${pr.pct ?? 2}%` }} /></div>
+        <div className="dl-meta">
+          <span>{pr.pct != null ? `${pr.pct}%` : pr.status}{pr.total_gb ? ` · ${pr.done_gb} of ${pr.total_gb} GB` : ''}</span>
+          <button className="link-btn" onClick={() => send({ type: 'local_cancel', name })}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tab-pane">
+      <div className={`ollama-status ${st.running ? 'ok' : ''}`}>
+        <span className={`dot ${st.running ? 'on' : 'off'}`} />
+        <div className="grow">
+          {st.running ? <><b>Ollama is running</b><span className="muted"> · free local models · v{st.version}</span></>
+            : st.installed ? <><b>Ollama is installed but not running</b></>
+            : <><b>Ollama isn’t installed yet</b><div className="muted small">Ollama runs AI models on your Mac for free. Nothing you send leaves your computer.</div></>}
+        </div>
+        {!st.installed && st.can_install && (
+          <button className="btn primary sm" disabled={st.installing} onClick={() => { setLog([]); send({ type: 'local_install' }); }}>
+            {st.installing ? 'Installing…' : 'Install Ollama'}
+          </button>
+        )}
+        {st.installed && !st.running && <button className="btn primary sm" onClick={() => send({ type: 'local_start' })}>Start Ollama</button>}
+      </div>
+      {st.installing && log.length > 0 && <pre className="install-log">{log.join('\n')}</pre>}
+
+      <div className="section-title pane-sub">Recommended for your Mac · {st.ram_gb} GB memory</div>
+      <div className="local-grid">
+        {st.recommended.map((r) => {
+          const downloaded = have.has(r.name);
+          const tooBig = r.min_ram > st.ram_gb;
+          const busy = st.pulling.includes(r.name);
+          return (
+            <div key={r.name} className={`local-card ${r.name === st.best ? 'best' : ''}`}>
+              <div className="local-head">
+                <b>{r.title}</b>
+                {r.name === st.best && <span className="badge">Best fit</span>}
+              </div>
+              <div className="muted small">{r.about}</div>
+              <div className="local-meta"><code>{r.name}</code> · {r.size}</div>
+              {tooBig && !downloaded && r.name !== st.best && <div className="warn small">Needs about {r.min_ram} GB of memory; it would be very slow here.</div>}
+              <Bar name={r.name} />
+              <div className="local-actions">
+                {downloaded ? (
+                  inList(r.name) && inList(r.name).id === models.active
+                    ? <span className="chip ok">In use</span>
+                    : <button className="btn ghost sm" onClick={() => inList(r.name) ? send({ type: 'model_select', id: inList(r.name).id }) : send({ type: 'local_pull', name: r.name })}>Chat with it</button>
+                ) : (
+                  <button className="btn primary sm" disabled={!st.running || busy} onClick={() => send({ type: 'local_pull', name: r.name })}>
+                    {busy ? 'Downloading…' : 'Download'}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {st.models.length > 0 && (
+        <>
+          <div className="section-title pane-sub">On this Mac</div>
+          <ul className="local-list">
+            {st.models.map((m) => (
+              <li key={m.name}>
+                <code>{m.name}</code><span className="muted small">{m.size_gb} GB</span>
+                <span className="grow" />
+                {inList(m.name)?.id === models.active ? <span className="chip ok">In use</span>
+                  : <button className="btn ghost sm" onClick={() => inList(m.name) ? send({ type: 'model_select', id: inList(m.name).id }) : send({ type: 'local_pull', name: m.name })}>Use</button>}
+                <button className={`btn ghost sm ${confirm === m.name ? 'danger' : ''}`}
+                  onClick={() => (confirm === m.name ? (send({ type: 'local_delete', name: m.name }), setConfirm(null)) : setConfirm(m.name))}>
+                  {confirm === m.name ? `Free ${m.size_gb} GB?` : 'Remove'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {st.running && (
+        <div className="custom-pull">
+          <input value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="Another model from ollama.com, e.g. qwen3:8b" spellCheck={false}
+            onKeyDown={(e) => e.key === 'Enter' && custom.trim() && send({ type: 'local_pull', name: custom.trim() })} />
+          <button className="btn ghost sm" disabled={!custom.trim()} onClick={() => send({ type: 'local_pull', name: custom.trim() })}>Download</button>
+          <a className="small" href="https://ollama.com/search?c=tools" target="_blank" rel="noreferrer">Browse models ↗</a>
+        </div>
+      )}
+      {Object.entries(progress).filter(([n]) => !st.recommended.some((r) => r.name === n)).map(([n]) => (
+        <div key={n} className="custom-progress"><code>{n}</code><Bar name={n} /></div>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
+/* The panel shell with tabs.                                                 */
+/* ------------------------------------------------------------------------ */
+export default function ModelsPanel({ models, send, onClose, initialTab }) {
+  const [tab, setTab] = useState(initialTab || (models.items.length ? 'mine' : 'local'));
+  useEffect(() => {
+    const esc = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', esc);
+    return () => window.removeEventListener('keydown', esc);
+  }, [onClose]);
+  const tabs = [['connect', 'Connect a provider'], ['local', 'Local models'], ['mine', `My models · ${models.items.length}`]];
+  return (
+    <div className="modal-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal" role="dialog" aria-label="Models">
+        <div className="modal-head">
+          <div>
+            <div className="modal-title">Models</div>
+            <div className="muted small">Choose what powers Steward. Add as many as you like and switch from the chat box.</div>
+          </div>
+          <button className="icon-btn" onClick={onClose} aria-label="Close"><Icon name="x" /></button>
+        </div>
+        <div className="tabs" role="tablist">
+          {tabs.map(([id, label]) => (
+            <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>{label}</button>
+          ))}
+        </div>
+        {tab === 'connect' && <div className="modal-scroll"><ConnectProvider models={models} send={send} onDone={() => setTab('mine')} /></div>}
+        {tab === 'local' && <div className="modal-scroll"><LocalModels models={models} send={send} /></div>}
+        {tab === 'mine' && (models.items.length
+          ? <MyModels models={models} send={send} onClose={onClose} />
+          : <div className="tab-pane muted">No models yet. Download a free one under <b>Local models</b>, or <b>Connect a provider</b>.</div>)}
       </div>
     </div>
   );
