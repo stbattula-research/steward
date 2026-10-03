@@ -4,3 +4,5 @@ python-dotenv>=1.0
 apscheduler>=3.10,<4
 aiohttp>=3.9
 litellm>=1.100,<2
+pywebpush>=2.0
+segno>=1.6

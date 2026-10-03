@@ -5,10 +5,11 @@ import { ThinkingOrb } from 'thinking-orbs';
 import { VoiceBeam } from 'voice-glow';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import { transcribe, uploadFile, useAgent } from './useAgent.js';
+import { disablePush, enablePush, pushSupport, transcribe, uploadFile, useAgent } from './useAgent.js';
 import { Icon } from './icons.jsx';
 import MemoryPanel from './MemoryPanel.jsx';
 import ModelsPanel, { ModelPicker } from './ModelsPanel.jsx';
+import PhonePanel from './PhonePanel.jsx';
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -182,7 +183,7 @@ function Message({ ev }) {
     return (
       <div className="msg user">
         <div className="bubble"><Markdown text={ev.text} /></div>
-        <div className="meta">{ev.source === 'telegram' && <span className="tag">via Telegram</span>}{clock(ev.ts)}</div>
+        <div className="meta">{ev.source === 'telegram' && <span className="tag">via Telegram</span>}{ev.source === 'phone' && <span className="tag">from phone</span>}{clock(ev.ts)}</div>
       </div>
     );
   }
@@ -194,7 +195,7 @@ function Message({ ev }) {
   );
 }
 
-function EmptyState({ info, onPick }) {
+function EmptyState({ info, onPick, phone }) {
   const theme = useTheme();
   const ideas = [
     "What's using the most space on my Mac?",
@@ -206,7 +207,8 @@ function EmptyState({ info, onPick }) {
     <div className="empty">
       <BotAvatar type={info.avatar} state="default" face="mouth" size={112} theme={theme} />
       <h1>What can I do for you?</h1>
-      <p className="muted">I'm running on your Mac. Ask me to do something, or try one of these.</p>
+      <p className="muted">{phone ? "I'm on your Mac at home. Ask me to do something there, or try one of these."
+        : "I'm running on your Mac. Ask me to do something, or try one of these."}</p>
       <div className="ideas">
         {ideas.map((t) => <button key={t} className="idea" onClick={() => onPick(t)}>{t}</button>)}
       </div>
@@ -214,7 +216,7 @@ function EmptyState({ info, onPick }) {
   );
 }
 
-function Composer({ busy, connected, onSend, onStop, models, send, onManageModels }) {
+function Composer({ busy, connected, onSend, onStop, models, send, onManageModels, phone }) {
   const theme = useTheme();
   const [text, setText] = useState('');
   const [files, setFiles] = useState([]);       // {name, path} | {name, uploading:true}
@@ -285,7 +287,8 @@ function Composer({ busy, connected, onSend, onStop, models, send, onManageModel
       setStream(s);
       setVoice('recording');
     } catch {
-      setError('Microphone access was blocked. Allow it in your browser settings.');
+      setError(phone ? 'Microphone access was blocked. Allow it for this app in your phone’s Settings.'
+        : 'Microphone access was blocked. Allow it in your browser settings.');
     }
   }
 
@@ -315,13 +318,14 @@ function Composer({ busy, connected, onSend, onStop, models, send, onManageModel
             value={text}
             placeholder={voice === 'recording' ? 'Listening… tap the mic again to finish' : voice === 'transcribing' ? 'Transcribing…' : 'Ask your agent to do something'}
             onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
+            enterKeyHint="send"
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !phone) { e.preventDefault(); submit(); } }}
             onPaste={(e) => { const f = [...e.clipboardData.files]; if (f.length) { e.preventDefault(); addFiles(f); } }}
           />
           <div className="composer-bar">
             <div className="left">
               <button className="icon-btn" title="Attach files" onClick={() => fileInput.current.click()}><Icon name="paperclip" /></button>
-              <input ref={fileInput} type="file" multiple hidden onChange={(e) => { addFiles([...e.target.files]); e.target.value = ''; }} />
+              <input ref={fileInput} type="file" multiple hidden accept={phone ? 'image/*,video/*,application/pdf,*/*' : undefined} onChange={(e) => { addFiles([...e.target.files]); e.target.value = ''; }} />
               <button className={`icon-btn ${voice === 'recording' ? 'live' : ''}`} title={voice === 'recording' ? 'Stop recording' : 'Voice'} onClick={toggleMic} disabled={voice === 'transcribing'}>
                 <Icon name={voice === 'recording' ? 'stop' : 'mic'} />
               </button>
@@ -334,7 +338,7 @@ function Composer({ busy, connected, onSend, onStop, models, send, onManageModel
           </div>
         </div>
       </VoiceBeam>
-      <div className="hint">Enter to send · Shift + Enter for a new line · drop files to attach</div>
+      {!phone && <div className="hint">Enter to send · Shift + Enter for a new line · drop files to attach</div>}
     </div>
   );
 }
@@ -370,7 +374,7 @@ function AppearanceSwitch({ prefs, send }) {
 function PhoneSwitch({ prefs, send }) {
   const modes = [
     { id: 'auto', label: 'Auto', tip: 'Phone gets heads-ups when you have been away from this app for 10 minutes' },
-    { id: 'always', label: 'Always', tip: 'Everything also goes to Telegram' },
+    { id: 'always', label: 'Always', tip: 'Everything also goes to your phone' },
     { id: 'off', label: 'Off', tip: 'Only replies to messages you send from your phone' },
   ];
   return (
@@ -389,7 +393,7 @@ function PhoneSwitch({ prefs, send }) {
   );
 }
 
-function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, onMemory, memoryCount, onModels, modelCount }) {
+function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, onMemory, memoryCount, onModels, modelCount, onPhone, phone }) {
   const theme = useTheme();
   const [confirm, setConfirm] = useState(null);
   const hour = new Date().getHours();
@@ -417,6 +421,7 @@ function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, o
           <button className="action" onClick={() => send({ type: 'new' })}><Icon name="plus" />New chat</button>
           <button className="action" onClick={() => send({ type: 'stop' })} disabled={!status.busy}><Icon name="stop" />Stop</button>
         </div>
+        {phone ? <PhoneNotify info={info} send={send} /> : (<>
         <button className="memory-btn" onClick={onMemory}>
           <Icon name="book" />
           <span>Memory &amp; playbooks</span>
@@ -429,6 +434,13 @@ function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, o
           <span className="count">{modelCount}</span>
           <Icon name="chevron" size={14} />
         </button>
+        <button className="memory-btn" onClick={onPhone}>
+          <Icon name="phone" />
+          <span>Phone app</span>
+          <span className="count">{info.phones || 0}</span>
+          <Icon name="chevron" size={14} />
+        </button>
+        </>)}
       </div>
 
       <div className="section grow">
@@ -460,13 +472,64 @@ function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, o
 
       <div className="side-foot">
         <AppearanceSwitch prefs={prefs} send={send} />
-        {info.telegram && <PhoneSwitch prefs={prefs} send={send} />}
-        <div className="tg-line">
-          <span className={`dot ${info.telegram ? 'on' : 'off'}`} />
-          {info.telegram ? 'Telegram connected' : 'Telegram not set up (optional)'}
-        </div>
+        {(info.telegram || info.phones > 0) && <PhoneSwitch prefs={prefs} send={send} />}
+        {!phone && info.telegram && (
+          <div className="tg-line"><span className="dot on" />Telegram connected</div>
+        )}
       </div>
     </aside>
+  );
+}
+
+/** Phone only: turn notifications on/off for this phone. */
+function PhoneNotify({ info, send }) {
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const support = pushSupport();
+  const on = !!info.device?.push;
+  async function toggle() {
+    setErr(''); setBusy(true);
+    try { if (on) await disablePush(send); else await enablePush(info.vapid, send); }
+    catch (e) { setErr(e.message || 'Could not turn on notifications.'); }
+    setBusy(false);
+  }
+  return (
+    <div className="phone-notify">
+      <div className="setting-label"><Icon name="bell" size={14} />Notifications on this phone</div>
+      {support === 'ok' ? (
+        <button className={`btn ${on ? 'ghost' : 'primary'} sm`} disabled={busy || !info.vapid} onClick={toggle}>
+          {on ? 'Turn off' : 'Turn on'}
+        </button>
+      ) : support === 'install' ? (
+        <p className="muted small">Add {info.agent} to your Home Screen (Share → Add to Home Screen) and open it from there to get notifications.</p>
+      ) : <p className="muted small">This browser can’t show notifications. Try Chrome on Android or Safari on iPhone.</p>}
+      {err && <p className="composer-error">{err}</p>}
+      {info.device && <p className="muted small">Signed in as {info.device.name}. Remove this phone from the Mac app’s Phone app panel.</p>}
+    </div>
+  );
+}
+
+/** Phone only: a one-time nudge to turn on notifications. */
+function NotifyBanner({ info, send }) {
+  const [hidden, setHidden] = useState(() => { try { return localStorage.getItem('steward-notify-dismissed') === '1'; } catch { return false; } });
+  const [err, setErr] = useState('');
+  const support = pushSupport();
+  if (hidden || info.device?.push || !info.vapid || support === 'unsupported') return null;
+  const dismiss = () => { setHidden(true); try { localStorage.setItem('steward-notify-dismissed', '1'); } catch { /* ignore */ } };
+  return (
+    <div className="notify-banner" role="region" aria-label="Notifications">
+      <Icon name="bell" size={16} />
+      <div className="nb-text">
+        {support === 'install'
+          ? <>To get notifications, tap <Icon name="share" size={13} /> <b>Share → Add to Home Screen</b>, then open {info.agent} from there.</>
+          : <>Get a notification when {info.agent} replies or needs your OK.</>}
+        {err && <div className="composer-error">{err}</div>}
+      </div>
+      {support === 'ok' && <button className="btn primary sm" onClick={async () => {
+        try { await enablePush(info.vapid, send); } catch (e) { setErr(e.message); }
+      }}>Turn on</button>}
+      <button className="icon-btn" onClick={dismiss} aria-label="Dismiss"><Icon name="x" size={14} /></button>
+    </div>
   );
 }
 
@@ -503,7 +566,9 @@ export default function App() {
   const [modelsOpen, setModelsOpen] = useState(false);
   const [modelsTab, setModelsTab] = useState(null);
   const openModels = (tab) => { setModelsTab(tab || null); setModelsOpen(true); };
-  const welcome = connected && prefs.onboarded === false && !modelsOpen;
+  const phone = info.client === 'phone';
+  const [phoneOpen, setPhoneOpen] = useState(false);
+  const welcome = connected && !phone && prefs.onboarded === false && !modelsOpen;
   const finishWelcome = () => send({ type: 'set_pref', key: 'onboarded', value: true });
   const [sideOpen, setSideOpen] = useState(false);
   const [memOpen, setMemOpen] = useState(false);
@@ -529,7 +594,7 @@ export default function App() {
   useEffect(() => {                         // desktop notification when the window isn't focused
     const onEv = (e) => {
       const ev = e.detail;
-      if (document.hasFocus()) return;
+      if (document.hasFocus() || phone) return;      // phones get push notifications instead
       const n = ev.type === 'approval' ? { title: `${info.agent} needs your approval`, body: ev.summary.slice(0, 140) }
         : ev.type === 'message' && ev.role === 'assistant' ? { title: info.agent, body: ev.text.slice(0, 140) } : null;
       if (!n) return;
@@ -538,10 +603,19 @@ export default function App() {
     };
     window.addEventListener('agent-event', onEv);
     return () => window.removeEventListener('agent-event', onEv);
-  }, [info.agent]);
+  }, [info.agent, phone]);
+
+  useEffect(() => { document.documentElement.classList.toggle('phone', phone); }, [phone]);
+
+  useEffect(() => {                         // tapping a notification opens / focuses the app
+    if (!('serviceWorker' in navigator)) return;
+    const on = (e) => { if (e.data?.type === 'open') { stick.current = true; } };
+    navigator.serviceWorker.addEventListener('message', on);
+    return () => navigator.serviceWorker.removeEventListener('message', on);
+  }, []);
 
   function sendText(text) {
-    if (!native && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+    if (!native && !phone && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission();
     stick.current = true;
     send({ type: 'send', text });
   }
@@ -553,7 +627,9 @@ export default function App() {
         onClose={() => setSideOpen(false)} prefs={prefs}
         onMemory={() => { setMemOpen(true); setSideOpen(false); send({ type: 'memory_get' }); }}
         memoryCount={memory.files.length}
-        onModels={() => { openModels(); setSideOpen(false); }} modelCount={models.items.length} />
+        onModels={() => { openModels(); setSideOpen(false); }} modelCount={models.items.length}
+        onPhone={() => { setPhoneOpen(true); setSideOpen(false); }} phone={phone} />
+      {phoneOpen && <PhonePanel send={send} agent={info.agent} onClose={() => setPhoneOpen(false)} />}
       {modelsOpen && <ModelsPanel models={models} send={send} initialTab={modelsTab} onClose={() => setModelsOpen(false)} />}
       {welcome && <Welcome info={info} models={models}
         onLocal={() => { finishWelcome(); openModels('local'); }}
@@ -569,8 +645,10 @@ export default function App() {
             <BotAvatar type={info.avatar} state={status.busy ? 'working' : 'default'} size={26} theme={theme} />
             <span>{info.agent}</span>
           </div>
-          {!connected && <span className="chip warn">Reconnecting…</span>}
+          {!connected && <span className="chip warn">{phone ? 'Can’t reach your Mac…' : 'Reconnecting…'}</span>}
         </header>
+        {phone && connected && <NotifyBanner info={info} send={send} />}
+        {phone && !connected && <div className="offline-note">Make sure Tailscale is on (on this phone and your Mac) and your Mac is awake.</div>}
 
         <div className="thread" ref={thread} onScroll={(e) => {
           const el = e.currentTarget;
@@ -578,7 +656,7 @@ export default function App() {
         }}>
           <div className="thread-inner">
             {items.length === 0 ? (
-              <EmptyState info={info} onPick={sendText} />
+              <EmptyState info={info} onPick={sendText} phone={phone} />
             ) : (
               items.map((ev) => {
                 if (ev.type === 'steps') return <Steps key={ev.id} items={ev.items} live={status.busy && ev === lastSteps && items[items.length - 1] === ev} />;
@@ -602,7 +680,8 @@ export default function App() {
         </div>
 
         <Composer busy={status.busy} connected={connected} onSend={sendText} onStop={() => send({ type: 'stop' })}
-          models={models} send={send} onManageModels={() => openModels(models.items.length ? null : 'local')} />
+          models={models} send={send} phone={phone}
+          onManageModels={phone ? null : () => openModels(models.items.length ? null : 'local')} />
       </main>
     </div>
     </ThemeCtx.Provider>

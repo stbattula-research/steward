@@ -17,7 +17,7 @@ You choose what powers it: a **free local model** that never leaves your Mac (Ol
 | 🖥️ **Operate your Mac** | Runs shell commands, opens and controls apps (Mail, Calendar, Reminders, Notes, Music, Finder via AppleScript), moves the mouse and keyboard, finds and organizes files. |
 | 🌐 **Use the web like you do** | Drives a real Chrome profile that stays signed in, so it can navigate, fill forms, download statements and compare prices on sites you already use. |
 | 🔐 **Log in safely** | Passwords live in the **macOS Keychain**, never in a file. It asks before using one, types it only into the matching site, and scrubs it from every message and log. |
-| 💬 **Talk from anywhere** | A desktop app for your laptop, plus an optional Telegram bot for your phone. One conversation that you can continue on either. |
+| 💬 **Talk from anywhere** | A Mac app, plus a **phone app for iPhone and Android** with notifications, connected privately through Tailscale. Telegram works too if you prefer it. It's one conversation you can continue on any of them. |
 | 🎙️ **Voice** | Hold a conversation with voice notes, transcribed on-device with Whisper. |
 | ⏰ **Scheduled tasks** | "Every weekday at 8am send me my calendar", "Remind me at 5pm to call the bank", "Every Sunday clean up my Downloads". |
 | 👀 **Proactive watching** | "Tell me when the flight price drops", plus an hourly watchlist. These checks are read-only and only ping you when something needs attention. |
@@ -97,16 +97,39 @@ Add as many models as you like, then choose one for each chat from the **model p
 - **Sidebar:** status, quick actions (screenshot, check watchlist, new chat, stop), scheduled tasks you can cancel, and the **Phone alerts** switch.
 - **Appearance:** choose **Auto** (follows your Mac), **Light** or **Dark** at the bottom of the sidebar. You get desktop notifications when the window is in the background.
 
-### From your phone (Telegram, optional)
-Text or voice-note your bot. Commands: `/screen` `/stop` `/new` `/status` `/tasks` `/cancel <id>` `/watch` `/memory`.
+### Phone app (iPhone and Android)
 
-The app and Telegram share **one conversation**. Messages from your phone appear in the app's history.
+<p align="center"><img src="docs/phone.png" width="260" alt="Steward phone app"></p>
 
-**Phone alerts** (set in the sidebar) controls what reaches your phone:
+Steward has its own phone app. It has an icon on your Home Screen, opens full screen, and sends real notifications. It talks straight to your Mac over **[Tailscale](https://tailscale.com)**, a free private network between your own devices. Nothing is opened to the internet, there's no server in the middle, and it isn't from an App Store, so there's no account or fee.
 
-- **Auto:** heads-ups go to your phone only when you haven't used the app for 10 minutes.
+**Set it up once** (about 5 minutes). In the Mac app, open **Phone app** in the sidebar and follow the steps:
+
+1. **Connect this Mac to Tailscale.** Click *Get Tailscale for Mac*, install it, open it and sign in (a Google, Apple or Microsoft account works).
+2. **Turn on phone access.** The first time, Tailscale asks you to allow secure links for your network. Click *Allow in Tailscale*.
+3. **Pair your phone:**
+   - Install **Tailscale** on your phone (App Store or Google Play) and sign in with the **same account**.
+   - Scan the QR code with your phone's camera.
+   - **iPhone:** tap Share → **Add to Home Screen**, then open Steward from the Home Screen. **Android:** tap **Install**.
+   - Enter the pairing code shown on your Mac.
+4. In the phone app, tap **Turn on** to get notifications.
+
+![Phone app setup on the Mac](docs/phone-setup.png)
+
+**What you can do from your phone:** chat, talk (mic button), send photos and files, approve or deny actions, take a screenshot of your Mac, see and cancel scheduled tasks, and switch models. You get a notification when Steward replies while the app is closed, when it needs your OK (on Android you can Approve or Deny right from the notification), and for scheduled tasks and heads-ups.
+
+**Safety:** each phone gets its own key, and you can remove a lost phone in **Phone app** to sign it out straight away. Models, API keys, memory and pairing can only be changed on the Mac. Notifications are end-to-end encrypted to your phone. iPhone needs iOS 16.4 or later for notifications.
+
+The phone, the Mac app and Telegram share **one conversation**. **Phone alerts** (in the sidebar) controls what reaches your phone:
+
+- **Auto:** heads-ups go to your phone only when you haven't used the Mac app for 10 minutes.
 - **Always:** everything also goes to your phone.
 - **Off:** your phone only gets replies to messages you sent from it.
+
+Your Mac has to be awake and online for the phone to reach it (see Troubleshooting).
+
+### Telegram (optional)
+If you'd rather use Telegram, set up a bot with `Configure Steward.command`. Text or voice-note your bot. Commands: `/screen` `/stop` `/new` `/status` `/tasks` `/cancel <id>` `/watch` `/memory`. Once a phone app has notifications on, alerts go to the phone app instead of Telegram, and Telegram only answers messages you send it.
 
 ### Things to try
 - *What's using the most space on my Mac?*
@@ -152,7 +175,7 @@ Add servers to `integrations.json`; examples for GitHub and a filesystem folder 
 - **Background checks are read-only:** they can look, but can't type, submit, use passwords or run anything except simple read-only commands.
 - **Your own rules:** `rules.json` adds allow, ask or block rules, for example `"block": ["Bash(*git push --force*)"]`. Built-in blocks can't be overridden.
 - **Prompt-injection aware:** text on web pages and in emails is treated as information, never as instructions.
-- **Locked down:** the desktop app listens on `127.0.0.1` only, needs a secret sign-in link (the app handles it), and refuses other websites. Telegram answers only your user ID.
+- **Locked down:** Steward listens on `127.0.0.1` only, needs a secret sign-in link (the Mac app handles it), and refuses other websites. Phones reach it only through your private Tailscale network, and each phone needs its own pairing key. Telegram answers only your user ID.
 - **Every action is checked:** the rules run as a hook on every action the agent takes, including "read-only" ones the engine would otherwise allow on its own.
 - **Stuck-loop guard:** if the agent repeats the same action 3 times, the next attempt is refused and it's told to change approach or report back.
 - **Limits:** approvals time out after 10 minutes (counted as denied), and each task has a step limit and, for the Anthropic API, a spend cap.
@@ -197,7 +220,8 @@ scheduler.py (tasks, watchlist) ────────────────
 | `brain.py` | Agent sessions on the Claude Agent SDK; brain selection; prompt size kept small for local models |
 | `guardrails.py`, `rules.json` | Permission rules |
 | `scheduler.py` | Scheduled tasks, watch jobs, hourly watchlist |
-| `channels.py`, `webserver.py`, `telegram_bot.py` | Routing between the app and your phone |
+| `channels.py`, `webserver.py`, `telegram_bot.py` | Routing between the Mac app, the phone app and Telegram |
+| `mobile.py` | Phone app: pairing, Tailscale access, push notifications |
 | `tools.py`, `vault.py`, `voice.py` | Custom tools, Keychain logins, Whisper transcription |
 | `web/` | Desktop app (React + Vite; `web/dist` is prebuilt) |
 | `memory.example/` | Templates copied to `memory/` on first run |
@@ -215,6 +239,8 @@ scheduler.py (tasks, watchlist) ────────────────
 | Screenshots are blank, or clicks don't work | System Settings → Privacy & Security → allow **Screen Recording** and **Accessibility** for `.venv/bin/python` (and Terminal). |
 | "Ollama isn't reachable" | **Models → Local models → Start**, or run `brew services start ollama`. |
 | The Steward app shows "Waiting for Steward…" | It retries and restarts the agent for you. If it keeps waiting, double-click `Start Steward.command`. |
+| Phone app says "Can't reach your Mac" | Make sure Tailscale is on, on both the phone and the Mac, and the Mac is awake. In the Mac app, **Phone app** should show steps 1 and 2 as done. |
+| No notifications on iPhone | Open Steward from the **Home Screen** icon (not Safari), tap **Turn on**, and check Settings → Notifications → Steward. Needs iOS 16.4+. |
 | No Steward icon in the Dock | Open `~/Applications/Steward.app` and choose Options → Keep in Dock, or search Spotlight for "Steward". |
 | The Mac sleeps and Steward stops answering | Steward keeps the Mac awake while it's on, but closing the lid sleeps it (unless it's plugged into power and an external display). |
 | Logs | `tail -f ~/.steward/agent.log` (passwords are redacted) |

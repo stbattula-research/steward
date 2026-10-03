@@ -524,3 +524,54 @@ a.btn { text-decoration: none; color: inherit; }
 .welcome-tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
 .welcome-tag.accent { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 @media (max-width: 560px) { .welcome-options { grid-template-columns: 1fr; } }
+
+/* ---------------------------------------------------------- phone panel --- */
+.phone-modal { max-width: 760px; }
+.phone-pane { gap: 6px; }
+.pstep { display: flex; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.pstep.disabled { opacity: 0.5; }
+.pstep-num { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 13px; font-weight: 600; border: 1px solid var(--line-strong); color: var(--muted); }
+.pstep.done .pstep-num { background: var(--ok); border-color: var(--ok); color: var(--bg); }
+.pstep-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.pstep-title { font-weight: 600; font-size: 14.5px; padding-top: 3px; }
+.row-btns { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; color: inherit; }
+a.btn.primary { color: var(--bg); }
+.ok-line { color: var(--ok); }
+.pair-grid { display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: start; }
+.pair-how { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13.5px; line-height: 1.55; }
+.pair-how li { margin-bottom: 8px; }
+.pair-how b { color: var(--text); font-weight: 600; }
+.pair-qr { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+.qr { background: #fff; border-radius: 12px; padding: 6px; line-height: 0; }
+.qr svg { width: 168px; height: 168px; }
+.pair-code { font: 600 26px/1.1 var(--mono); letter-spacing: 0.12em; }
+.url-line { max-width: 220px; overflow-wrap: anywhere; }
+.paired { padding-top: 14px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.device-list { list-style: none; margin: 0; padding: 0; width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.device { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.device-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+@media (max-width: 640px) { .pair-grid { grid-template-columns: 1fr; } .pair-qr { order: -1; } }
+
+/* ---------------------------------------------------------- phone app ----- */
+.phone-notify { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; align-items: flex-start; }
+.notify-banner { display: flex; align-items: center; gap: 10px; margin: 8px 16px 0; padding: 10px 12px;
+  border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); font-size: 13.5px; }
+.notify-banner .nb-text { flex: 1; min-width: 0; color: var(--muted); }
+.notify-banner b { color: var(--text); }
+.notify-banner .icon { flex: none; }
+.offline-note { margin: 8px 16px 0; font-size: 13px; color: var(--warn); text-align: center; }
+
+/* Phone app (installed or in the browser): respect the notch and home indicator. */
+html.phone, html.phone body { overscroll-behavior: none; }
+html.phone .topbar { padding-top: calc(env(safe-area-inset-top) + 8px); height: auto; min-height: calc(env(safe-area-inset-top) + 52px); }
+html.phone .composer-wrap { padding-bottom: calc(env(safe-area-inset-bottom) + 10px); }
+html.phone .sidebar { padding-top: calc(env(safe-area-inset-top) + 12px); padding-bottom: calc(env(safe-area-inset-bottom) + 12px); }
+html.phone .modal { padding-top: env(safe-area-inset-top); }
+html.phone textarea { font-size: 16px; }          /* stops iOS zooming into the text box */
+html.phone .thread { -webkit-overflow-scrolling: touch; }
+html.phone .bubble, html.phone .md { overflow-wrap: anywhere; }
+html.phone .app { height: 100dvh; }
+.pair-how .icon, .notify-banner .nb-text .icon { display: inline; vertical-align: -2px; }
+.phone-notify { margin-top: 14px; }

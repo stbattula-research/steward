@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#121212" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Steward" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Pair with Steward</title>
+<style>
+  :root { --bg:#121212; --card:#1b1b1b; --line:#2b2b2b; --text:#ededed; --muted:#9a9a9a; --accent:#ededed; --accent-text:#121212; --danger:#ff7a7a; --ok:#6fd49a; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f7f7f5; --card:#fff; --line:#e4e4e0; --text:#1a1a1a; --muted:#6b6b6b; --accent:#1a1a1a; --accent-text:#fff; --danger:#c9302c; --ok:#1d8a4f; } }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 440px; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 40px) 20px calc(env(safe-area-inset-bottom) + 32px); }
+  .logo { width: 72px; height: 72px; border-radius: 18px; display: block; margin: 0 auto 16px; }
+  h1 { font-size: 24px; text-align: center; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); text-align: center; margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin-bottom: 14px; }
+  .card h2 { font-size: 15px; margin: 0 0 8px; }
+  ol { margin: 0; padding-left: 20px; color: var(--muted); }
+  ol li { margin: 6px 0; } ol b { color: var(--text); }
+  label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 8px; }
+  input { width: 100%; font: 600 24px/1.2 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 0.18em; text-align: center;
+    text-transform: uppercase; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .name { font: 16px/1.4 inherit; letter-spacing: 0; text-transform: none; text-align: left; font-family: inherit; font-weight: 400; margin-top: 10px; }
+  button { width: 100%; margin-top: 14px; padding: 14px; border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-text);
+    font: 600 16px/1 inherit; font-family: inherit; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  button[disabled] { opacity: 0.5; }
+  .err { color: var(--danger); font-size: 14px; margin: 10px 0 0; min-height: 1em; }
+  .muted { color: var(--muted); font-size: 13px; text-align: center; margin-top: 18px; }
+  .hidden { display: none; }
+  .share { display: inline-block; vertical-align: -3px; }
+</style>
+</head>
+<body>
+<main>
+  <img class="logo" src="/apple-touch-icon.png" alt="" />
+  <h1>Pair with Steward</h1>
+  <p class="sub">Connect this phone to the agent on your Mac.</p>
+
+  <div class="card hidden" id="ios-install">
+    <h2>First, add Steward to your Home Screen</h2>
+    <ol>
+      <li>Tap <svg class="share" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M8 7l4-4 4 4"/><path d="M6 11H5a1 1 0 00-1 1v8a1 1 0 001 1h14a1 1 0 001-1v-8a1 1 0 00-1-1h-1"/></svg> <b>Share</b> at the bottom of Safari.</li>
+      <li>Choose <b>Add to Home Screen</b>, then <b>Add</b>.</li>
+      <li>Open <b>Steward</b> from your Home Screen and enter the code there.</li>
+    </ol>
+    <p class="muted" style="text-align:left;margin-top:12px">This makes it a real app with notifications. The code also works here if you’d rather use Safari.</p>
+  </div>
+
+  <div class="card hidden" id="android-install">
+    <h2>Install the app</h2>
+    <p style="margin:0;color:var(--muted)">Get Steward on your Home Screen with notifications.</p>
+    <button id="install-btn" class="ghost">Install Steward</button>
+  </div>
+
+  <form class="card" id="form" autocomplete="off">
+    <label for="code">Enter the pairing code shown on your Mac<br><span style="font-size:12px">(Steward app → Phone app)</span></label>
+    <input id="code" inputmode="text" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="9" placeholder="XXXX-XXXX" required />
+    <input id="name" class="name" maxlength="40" placeholder="Name for this phone" />
+    <button id="go" type="submit">Pair this phone</button>
+    <p class="err" id="err" role="alert"></p>
+  </form>
+  <p class="muted">Only your own devices on Tailscale can open this page.</p>
+</main>
+<script>
+(function () {
+  var standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  var ua = navigator.userAgent;
+  var ios = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var android = /Android/.test(ua);
+  if (ios && !standalone) document.getElementById('ios-install').classList.remove('hidden');
+
+  var deferred = null;
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault(); deferred = e;
+    if (!standalone) document.getElementById('android-install').classList.remove('hidden');
+  });
+  document.getElementById('install-btn').onclick = function () { if (deferred) { deferred.prompt(); deferred = null; } };
+
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function () {});
+
+  var code = document.getElementById('code');
+  var fromLink = new URLSearchParams(location.search).get('code') || '';
+  var fmt = function (v) { v = v.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8); return v.length > 4 ? v.slice(0, 4) + '-' + v.slice(4) : v; };
+  if (fromLink) code.value = fmt(fromLink);
+  code.addEventListener('input', function () { code.value = fmt(code.value); });
+
+  var guess = ios ? (/iPad/.test(ua) ? 'iPad' : 'iPhone') : android ? 'Android phone' : 'Phone';
+  document.getElementById('name').value = guess;
+
+  document.getElementById('form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var btn = document.getElementById('go'), err = document.getElementById('err');
+    btn.disabled = true; err.textContent = '';
+    fetch('/pair', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code.value, name: document.getElementById('name').value }) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (res.ok) { location.replace('/'); return; }
+        err.textContent = res.j.error || 'That didn’t work. Try again.'; btn.disabled = false;
+      })
+      .catch(function () { err.textContent = 'Can’t reach your Mac. Is Tailscale on, on both devices?'; btn.disabled = false; });
+  });
+})();
+</script>
+</body>
+</html>

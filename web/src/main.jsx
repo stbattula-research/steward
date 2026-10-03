@@ -8,3 +8,9 @@ createRoot(document.getElementById('root')).render(
     <App />
   </StrictMode>,
 );
+
+// Phone app: the service worker shows notifications (and Approve / Deny on Android).
+// Not needed inside the Mac app.
+if ('serviceWorker' in navigator && !window.webkit?.messageHandlers?.steward) {
+  navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => { /* not a secure context */ });
+}

@@ -37,16 +37,17 @@ export function ModelPicker({ models, busy, send, onManage }) {
     if (!open) return;
     const close = (e) => { if (!box.current?.contains(e.target) && !menu.current?.contains(e.target)) setOpen(false); };
     const esc = (e) => e.key === 'Escape' && setOpen(false);
-    window.addEventListener('mousedown', close);
+    window.addEventListener('pointerdown', close);
     window.addEventListener('keydown', esc);
-    return () => { window.removeEventListener('mousedown', close); window.removeEventListener('keydown', esc); };
+    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', esc); };
   }, [open]);
 
   if (models.items.length === 0) {
     return (
       <div className="model-picker">
-        <button className="model-chip setup" onClick={onManage}>
-          <Icon name="plus" size={12} /><span className="model-chip-label">Set up a model</span>
+        <button className="model-chip setup" onClick={onManage || undefined} disabled={!onManage}
+          title={onManage ? '' : 'Set up a model in the Steward app on your Mac'}>
+          <Icon name="plus" size={12} /><span className="model-chip-label">{onManage ? 'Set up a model' : 'No model yet (set up on Mac)'}</span>
         </button>
       </div>
     );
@@ -76,10 +77,12 @@ export function ModelPicker({ models, busy, send, onManage }) {
             </button>
           ))}
           {busy && <div className="model-menu-note">Finish or stop the current task to switch.</div>}
+          {onManage && <>
           <div className="model-menu-sep" />
           <button className="model-item manage" onClick={() => { setOpen(false); onManage(); }}>
             <Icon name="plus" size={14} /> <span>Add or manage models…</span>
           </button>
+          </>}
         </div>, document.body,
       )}
     </div>
