@@ -12,6 +12,7 @@ export function useAgent() {
   const [prefs, setPrefs] = useState({ phone_mode: 'auto' });
   const [toast, setToast] = useState(null);
   const [models, setModels] = useState({ items: [], active: '', background: '', providers: {} });
+  const [councilLive, setCouncilLive] = useState({});   // cid -> mid -> {steps, step}
   const ws = useRef(null);
   const retry = useRef(0);
   const alive = useRef(true);
@@ -43,6 +44,9 @@ export function useAgent() {
         case 'models': setModels(ev); break;
         case 'hello_update': setInfo((i) => ({ ...i, ...ev })); break;
         case 'device': setInfo((i) => ({ ...i, device: ev.device })); break;
+        case 'council_live':
+          setCouncilLive((c) => ({ ...c, [ev.cid]: { ...(c[ev.cid] || {}), [ev.mid]: { steps: ev.steps, step: ev.step } } }));
+          break;
         case 'model_test_result':
         case 'ollama_tags':
         case 'model_saved':
@@ -93,7 +97,7 @@ export function useAgent() {
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(msg));
   }, []);
 
-  return { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send };
+  return { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send, councilLive };
 }
 
 export async function uploadFile(file) {

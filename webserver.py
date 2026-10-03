@@ -312,8 +312,19 @@ class WebUI:
         if kind == "send" and m.get("text", "").strip():
             text = m["text"].strip()
             source = "phone" if on_phone else "web"
-            await self.emit({"type": "message", "role": "user", "text": text, "source": source})
-            asyncio.ensure_future(self.brain.handle(text, origin=source))
+            mode = m.get("mode") if m.get("mode") in ("auto", "web", "academic", "research") else "auto"
+            team = None
+            t = m.get("team") or {}
+            ids = [i for i in dict.fromkeys(t.get("members") or []) if self.brain.registry.get(i)][:3]
+            if len(ids) >= 2:
+                team = {"members": ids, "rounds": 2 if t.get("rounds") == 2 else 1}
+            ev = {"type": "message", "role": "user", "text": text, "source": source}
+            if mode != "auto":
+                ev["mode"] = mode
+            if team:
+                ev["team"] = [self.brain.registry.get(i)["label"] for i in ids]
+            await self.emit(ev)
+            asyncio.ensure_future(self.brain.handle(text, origin=source, mode=mode, team=team))
         elif kind == "approve":
             entry = self.pending.get(m.get("aid"))
             if entry and not entry[0].done():

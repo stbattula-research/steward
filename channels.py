@@ -12,6 +12,7 @@
 """
 import asyncio
 import logging
+import re
 from pathlib import Path
 
 log = logging.getLogger("router")
@@ -66,10 +67,27 @@ class Router:
         text = " ".join(str(text).replace("**", "").split())
         return text if len(text) <= n else text[: n - 1] + "…"
 
+    @staticmethod
+    def _split_related(text: str) -> tuple[str, list[str]]:
+        """Pull the 'Related: a? | b? | c?' line (suggested follow-ups) off the end of an answer."""
+        m = re.search(r"\n?[ \t>*_`]*Related:[ \t]*(.+?)[`*_ \t]*\s*$", text, re.I)
+        if not m or "|" not in m.group(1):
+            return text, []
+        items = [q.strip(" *_`-") for q in m.group(1).split("|")]
+        return text[:m.start()].rstrip(), [q for q in items if 3 < len(q) < 200][:3]
+
     # ------------------------------------------------------- Channel protocol --
     async def send_text(self, text: str) -> None:
+        text, related = self._split_related(text)
+        if not text:
+            if related and self.web:
+                await self.web.emit({"type": "related", "items": related})
+            return
         if self.web:
-            await self.web.emit({"type": "message", "role": "assistant", "text": text})
+            ev = {"type": "message", "role": "assistant", "text": text}
+            if related:
+                ev["related"] = related
+            await self.web.emit(ev)
         if self._to_push():
             from config import AGENT_NAME
             self._notify_phone({"title": AGENT_NAME, "body": self._snippet(text), "tag": "reply"})
@@ -109,6 +127,20 @@ class Router:
     async def on_tool(self, name: str, summary: str) -> None:
         if self.web:
             await self.web.emit({"type": "tool", "name": name, "summary": summary})
+
+    async def on_sources(self, items: list[dict]) -> None:
+        if self.web:
+            await self.web.emit({"type": "sources", "items": items})
+        if self._to_telegram() and items:
+            await self.telegram.send_text("Sources:\n" + "\n".join(f"[{s['n']}] {s['url']}" for s in items[:10]))
+
+    async def council_event(self, ev: dict, persist: bool = True) -> None:
+        if not self.web:
+            return
+        if persist:
+            await self.web.emit(ev)
+        else:
+            await self.web._broadcast(ev)
 
     async def set_status(self, busy: bool, label: str = "") -> None:
         if self.web:

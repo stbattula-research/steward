@@ -13,6 +13,8 @@ from claude_agent_sdk import (
 
 import bridge
 import config
+import council as council_mod
+import websearch
 import guardrails
 import models
 from tools import Channel, Secrets, build_server
@@ -22,7 +24,7 @@ log = logging.getLogger("brain")
 # Only the built-in tools the agent actually uses. Everything else the CLI ships with
 # (sub-agents, plan mode, task lists, notebooks...) is left out so the prompt stays small;
 # that matters a lot for a local model.
-BUILTIN_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch"]
+BUILTIN_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]   # web: our web_search / fetch_page
 
 # Browser actions that are rarely needed; hiding them shrinks every request.
 # Same action repeated this many times in one task = the agent is stuck; make it change course.
@@ -112,6 +114,10 @@ class Brain:
         self.active: ClaudeSDKClient | None = None   # whichever session is running now
         self.scheduler = None                 # set by telegram_bot after construction
         self.recent_reports: list[str] = []   # automated results to show the chat session
+        self.sources = websearch.Sources()    # numbered web sources for the current answer
+        self.council = council_mod.Council(
+            self, emit=lambda ev: self._hook("council_event", ev, True),
+            broadcast=lambda ev: self._hook("council_event", ev, False))
 
     # --------------------------------------------------------------- config --
     def _brain_env(self, m: dict) -> tuple[str | None, dict, float | None]:
@@ -191,6 +197,7 @@ class Brain:
             browser_args += ["--snapshot-mode", "none"]
         servers = {
             "me": build_server(channel),
+            "web": websearch.build_web_server(lambda: self.sources),
             "browser": {"type": "stdio", "command": "npx", "args": browser_args},
             **_integrations(),
         }
@@ -255,6 +262,8 @@ class Brain:
         return m
 
     async def stop_current(self) -> None:
+        if self.busy:
+            await self.council.stop()
         if self.active and self.busy:
             self.interrupted = True
             await self.active.interrupt()
@@ -372,13 +381,34 @@ class Brain:
             if asyncio.iscoroutine(res):
                 await res
 
-    async def handle(self, text: str, origin: str = "telegram") -> None:
-        """A message from the owner, in the ongoing conversation."""
+    async def _emit_sources(self) -> None:
+        if self.sources.items:
+            await self._hook("on_sources", self.sources.public())
+
+    async def handle(self, text: str, origin: str = "telegram", mode: str = "auto",
+                     team: dict | None = None) -> None:
+        """A message from the owner, in the ongoing conversation.
+        mode: auto | web | academic | research. team: {"members": [model ids], "rounds": 1-2}."""
         async with self.lock:
             self.busy = True
+            self.interrupted = False
+            self.sources = websearch.Sources()
             await self._hook("begin", origin)
             await self._hook("set_status", True, "Working")
             try:
+                if self.client is not None and team and len(team.get("members") or []) >= 2:
+                    await self._hook("set_status", True, "Team is researching")
+                    try:
+                        result = await self.council.run(text, team["members"], team.get("rounds", 1), mode)
+                    except asyncio.CancelledError:
+                        await self.channel.send_text("Stopped the team.")
+                        return
+                    self.sources = result["sources"]
+                    await self._hook("set_status", True, "Lead is writing the final answer")
+                    text = council_mod.Council.lead_prompt(text, result, mode)
+                elif council_mod.mode_hint(mode):
+                    text = f"{text}\n\n({council_mod.mode_hint(mode)})"
+
                 if self.recent_reports:
                     text = ("[For context, automated runs since we last talked reported:\n"
                             + "\n".join(self.recent_reports[-5:]) + "]\n\n" + text)
@@ -409,6 +439,7 @@ class Brain:
                         await self.channel.send_text(
                             "⚠️ This task is too big for the local model's memory. Try splitting it into "
                             "smaller steps, or switch to a larger brain with Configure Steward.command.")
+                await self._emit_sources()
             except Exception as e:
                 log.exception("request failed")
                 await self.channel.send_text(f"⚠️ Error: {Secrets.redact(str(e))[:500]}")
@@ -438,12 +469,15 @@ class Brain:
                            "NOTHING. Otherwise reply with a short heads-up and what he may want to do.")
             else:
                 await self.channel.send_text(f"⏰ {label}")
+            self.sources = websearch.Sources()
             client = ClaudeSDKClient(self._options(None, out, mode))
             try:
                 await client.connect()
                 self.active = client
                 await client.query(prompt)
                 await self._stream(client, out, save_session=False)
+                if mode != "watch":
+                    await self._emit_sources()
             except Exception as e:
                 log.exception("automated run failed")
                 await self.channel.send_text(f"⚠️ '{label}' failed: {Secrets.redact(str(e))[:300]}")

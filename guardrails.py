@@ -49,7 +49,7 @@ SENSITIVE_PATHS = [r"/\.ssh(/|$)", r"Library/Keychains", r"/\.steward(/|$)", r"\
 
 # Read-only / harmless tools.
 SAFE_TOOLS = {
-    "WebSearch", "WebFetch", "TodoWrite", "Task",
+    "WebSearch", "WebFetch", "TodoWrite", "Task", "mcp__web__web_search", "mcp__web__fetch_page",
     "mcp__me__take_screenshot", "mcp__me__send_file_to_me", "mcp__me__request_approval",
     "mcp__me__list_saved_logins", "mcp__me__remember", "mcp__me__notify_me",
     "mcp__sched__list_scheduled_tasks", "mcp__sched__cancel_scheduled_task",
@@ -199,6 +199,10 @@ def describe(tool_name: str, tool_input: dict) -> str:
         return f"{tool_name} file: {tool_input.get('file_path')}"
     if tool_name == "mcp__me__get_password":
         return f"Fetch password for saved login: {tool_input.get('name')}"
+    if tool_name == "mcp__web__web_search":
+        return f"Searching: {tool_input.get('query', '')[:200]}"
+    if tool_name == "mcp__web__fetch_page":
+        return f"Reading: {str(tool_input.get('url', ''))[:200]}"
     if tool_name == "mcp__sched__schedule_task":
         when = tool_input.get("cron") or tool_input.get("run_at")
         return (f"Schedule '{tool_input.get('name')}' ({tool_input.get('mode', 'task')}, {when}):\n"

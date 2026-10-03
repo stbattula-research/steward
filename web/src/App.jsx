@@ -10,6 +10,7 @@ import { Icon } from './icons.jsx';
 import MemoryPanel from './MemoryPanel.jsx';
 import ModelsPanel, { ModelPicker } from './ModelsPanel.jsx';
 import PhonePanel from './PhonePanel.jsx';
+import { CouncilCard, ModeChip, Related, SourceCards, TeamChip, citeHtml } from './Research.jsx';
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -57,7 +58,7 @@ function orbFor(tool) {
   if (n.includes('schedule') || n.startsWith('mcp__') && !n.startsWith('mcp__browser') && !n.startsWith('mcp__me')) return 'connecting';
   if (n.includes('browser_type') || n.includes('fill_form') || n.includes('press_key')) return 'weaving';
   if (n.includes('screenshot')) return 'shaping';
-  if (n.startsWith('mcp__browser') || n.startsWith('Web') || ['Read', 'Glob', 'Grep'].includes(n)) return 'searching';
+  if (n.startsWith('mcp__browser') || n.startsWith('mcp__web') || n.startsWith('Web') || ['Read', 'Glob', 'Grep'].includes(n)) return 'searching';
   if (['Write', 'Edit', 'MultiEdit'].includes(n) || n.includes('remember')) return 'composing';
   return 'working';
 }
@@ -67,7 +68,8 @@ function activityLabel(tool, statusLabel) {
   if (!n) return statusLabel && statusLabel !== 'Working' ? statusLabel : 'Thinking';
   if (n === 'Bash') return 'Running a command';
   if (n.startsWith('mcp__browser')) return 'Using the browser';
-  if (n.startsWith('Web')) return 'Searching the web';
+  if (n.startsWith('Web') || n === 'mcp__web__web_search') return 'Searching the web';
+  if (n === 'mcp__web__fetch_page') return 'Reading a source';
   if (['Read', 'Glob', 'Grep'].includes(n)) return 'Reading files';
   if (['Write', 'Edit', 'MultiEdit'].includes(n)) return 'Writing';
   if (n.includes('screenshot')) return 'Looking at the screen';
@@ -91,7 +93,38 @@ const clock = (iso) => (iso ? new Date(iso).toLocaleTimeString(undefined, { hour
 /** Group consecutive tool calls into one collapsible "steps" row. */
 function groupEvents(events) {
   const out = [];
+  const councils = new Map();
+  const lastAssistant = () => {
+    for (let i = out.length - 1; i >= 0; i--) {
+      if (out[i].type === 'message' && out[i].role === 'assistant') return i;
+      if (out[i].type === 'message' && out[i].role === 'user') return -1;
+    }
+    return -1;
+  };
   for (const ev of events) {
+    if (ev.type === 'sources' || ev.type === 'related') {
+      const i = lastAssistant();
+      if (i >= 0) out[i] = { ...out[i], [ev.type === 'sources' ? 'sources' : 'related']: ev.items };
+      const c = [...councils.values()].pop();
+      if (ev.type === 'sources' && c && !c.sources) c.sources = ev.items;
+      continue;
+    }
+    if (ev.type === 'council') {
+      let c = councils.get(ev.cid);
+      if (!c) {
+        c = { type: 'council', id: `c-${ev.cid}`, cid: ev.cid, members: ev.members || [], rounds: ev.rounds || 1, entries: {}, phase: ev.phase };
+        councils.set(ev.cid, c);
+        out.push(c);
+      }
+      c.phase = ev.phase;
+      if (ev.round) c.round = ev.round;
+      continue;
+    }
+    if (ev.type === 'council_member') {
+      const c = councils.get(ev.cid);
+      if (c) (c.entries[ev.mid] = c.entries[ev.mid] || []).push(ev);
+      continue;
+    }
     if (ev.type === 'tool') {
       const last = out[out.length - 1];
       if (last?.type === 'steps') last.items.push(ev);
@@ -103,8 +136,8 @@ function groupEvents(events) {
 
 /* ------------------------------------------------------------- components -- */
 
-function Markdown({ text }) {
-  const html = useMemo(() => DOMPurify.sanitize(marked.parse(text || '')), [text]);
+function Markdown({ text, sources }) {
+  const html = useMemo(() => DOMPurify.sanitize(citeHtml(marked.parse(text || ''), sources)), [text, sources]);
   return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
@@ -178,19 +211,27 @@ function FileCard({ ev }) {
   );
 }
 
-function Message({ ev }) {
+const MODE_TAG = { web: 'Web search', academic: 'Academic', research: 'Deep research' };
+
+function Message({ ev, onAsk }) {
   if (ev.role === 'user') {
     return (
       <div className="msg user">
         <div className="bubble"><Markdown text={ev.text} /></div>
-        <div className="meta">{ev.source === 'telegram' && <span className="tag">via Telegram</span>}{ev.source === 'phone' && <span className="tag">from phone</span>}{clock(ev.ts)}</div>
+        <div className="meta">
+          {ev.team && <span className="tag"><Icon name="users" size={11} /> {ev.team.join(' · ')}</span>}
+          {ev.mode && <span className="tag">{MODE_TAG[ev.mode] || ev.mode}</span>}
+          {ev.source === 'telegram' && <span className="tag">via Telegram</span>}{ev.source === 'phone' && <span className="tag">from phone</span>}{clock(ev.ts)}
+        </div>
       </div>
     );
   }
   if (ev.role === 'system') return <div className="msg system">{ev.text}</div>;
   return (
     <div className="msg assistant">
-      <Markdown text={ev.text} />
+      <Markdown text={ev.text} sources={ev.sources} />
+      <SourceCards sources={ev.sources} text={ev.text} />
+      <Related items={ev.related} onPick={onAsk} />
     </div>
   );
 }
@@ -201,7 +242,7 @@ function EmptyState({ info, onPick, phone }) {
     "What's using the most space on my Mac?",
     'Take a screenshot and tell me what apps are open',
     'Every weekday at 8am, send me my calendar for the day',
-    'Open YouTube and play some lo-fi music',
+    'What changed in the news about AI this week? Cite sources',
   ];
   return (
     <div className="empty">
@@ -216,8 +257,19 @@ function EmptyState({ info, onPick, phone }) {
   );
 }
 
+function loadLocal(key, fallback) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
+}
+function saveLocal(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* ignore */ } }
+
 function Composer({ busy, connected, onSend, onStop, models, send, onManageModels, phone }) {
   const theme = useTheme();
+  const [mode, setModeState] = useState(() => loadLocal('steward-mode', 'auto'));
+  const [team, setTeamState] = useState(() => loadLocal('steward-team', { on: false, members: [], rounds: 1 }));
+  const setMode = (m) => { setModeState(m); saveLocal('steward-mode', m); };
+  const setTeam = (t) => { setTeamState(t); saveLocal('steward-team', t); };
+  const teamIds = (team.members || []).filter((id) => models.items.some((m) => m.id === id));
+  const teamOn = team.on && teamIds.length >= 2;
   const [text, setText] = useState('');
   const [files, setFiles] = useState([]);       // {name, path} | {name, uploading:true}
   const [voice, setVoice] = useState('idle');   // idle | recording | transcribing
@@ -245,7 +297,7 @@ function Composer({ busy, connected, onSend, onStop, models, send, onManageModel
   function submit() {
     if (!canSend) return;
     const notes = files.map((f) => `[Attached file saved at: ${f.path}]`).join('\n');
-    onSend([text.trim(), notes].filter(Boolean).join('\n\n'));
+    onSend([text.trim(), notes].filter(Boolean).join('\n\n'), { mode, team: teamOn ? { members: teamIds, rounds: team.rounds || 1 } : null });
     setText(''); setFiles([]); setError('');
   }
 
@@ -316,7 +368,8 @@ function Composer({ busy, connected, onSend, onStop, models, send, onManageModel
             ref={ta}
             rows={1}
             value={text}
-            placeholder={voice === 'recording' ? 'Listening… tap the mic again to finish' : voice === 'transcribing' ? 'Transcribing…' : 'Ask your agent to do something'}
+            placeholder={voice === 'recording' ? 'Listening… tap the mic again to finish' : voice === 'transcribing' ? 'Transcribing…'
+              : teamOn ? `Ask the team (${teamIds.length} models)` : mode === 'research' ? 'What should I research?' : 'Ask anything, or ask your agent to do something'}
             onChange={(e) => setText(e.target.value)}
             enterKeyHint="send"
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !phone) { e.preventDefault(); submit(); } }}
@@ -330,6 +383,8 @@ function Composer({ busy, connected, onSend, onStop, models, send, onManageModel
                 <Icon name={voice === 'recording' ? 'stop' : 'mic'} />
               </button>
               <ModelPicker models={models} busy={busy} send={send} onManage={onManageModels} />
+              <ModeChip mode={mode} setMode={setMode} />
+              <TeamChip models={models} team={team} setTeam={setTeam} />
             </div>
             <div className="right">
               {busy && <button className="btn ghost sm" onClick={onStop}><Icon name="stop" size={12} /> Stop</button>}
@@ -562,7 +617,7 @@ function Welcome({ info, models, onLocal, onConnect, onSkip }) {
 /* -------------------------------------------------------------------- app -- */
 
 export default function App() {
-  const { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send } = useAgent();
+  const { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send, councilLive } = useAgent();
   const [modelsOpen, setModelsOpen] = useState(false);
   const [modelsTab, setModelsTab] = useState(null);
   const openModels = (tab) => { setModelsTab(tab || null); setModelsOpen(true); };
@@ -614,10 +669,10 @@ export default function App() {
     return () => navigator.serviceWorker.removeEventListener('message', on);
   }, []);
 
-  function sendText(text) {
+  function sendText(text, opts = {}) {
     if (!native && !phone && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission();
     stick.current = true;
-    send({ type: 'send', text });
+    send({ type: 'send', text, mode: opts.mode || 'auto', team: opts.team || null });
   }
 
   return (
@@ -660,7 +715,8 @@ export default function App() {
             ) : (
               items.map((ev) => {
                 if (ev.type === 'steps') return <Steps key={ev.id} items={ev.items} live={status.busy && ev === lastSteps && items[items.length - 1] === ev} />;
-                if (ev.type === 'message') return <Message key={ev.id} ev={ev} />;
+                if (ev.type === 'message') return <Message key={ev.id} ev={ev} onAsk={(q) => sendText(q)} />;
+                if (ev.type === 'council') return <CouncilCard key={ev.id} group={ev} live={councilLive[ev.cid]} busy={status.busy} Markdown={Markdown} />;
                 if (ev.type === 'approval') return <Approval key={ev.id} ev={ev} onAnswer={(aid, approved) => send({ type: 'approve', aid, approved })} />;
                 if (ev.type === 'file') return <FileCard key={ev.id} ev={ev} />;
                 if (ev.type === 'divider') return <div key={ev.id} className="divider"><span>{ev.text}</span></div>;

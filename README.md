@@ -15,6 +15,7 @@ You choose what powers it: a **free local model** that never leaves your Mac (Ol
 | | |
 |---|---|
 | 🖥️ **Operate your Mac** | Runs shell commands, opens and controls apps (Mail, Calendar, Reminders, Notes, Music, Finder via AppleScript), moves the mouse and keyboard, finds and organizes files. |
+| 🔎 **Answers with sources** | Searches the web and answers with numbered citations, source cards and follow-up questions. It has Web, Academic and Deep research modes, plus **Team mode**: up to 3 models research, debate and agree on one answer. |
 | 🌐 **Use the web like you do** | Drives a real Chrome profile that stays signed in, so it can navigate, fill forms, download statements and compare prices on sites you already use. |
 | 🔐 **Log in safely** | Passwords live in the **macOS Keychain**, never in a file. It asks before using one, types it only into the matching site, and scrubs it from every message and log. |
 | 💬 **Talk from anywhere** | A Mac app, plus a **phone app for iPhone and Android** with notifications, connected privately through Tailscale. Telegram works too if you prefer it. It's one conversation you can continue on any of them. |
@@ -96,6 +97,29 @@ Add as many models as you like, then choose one for each chat from the **model p
 - **Approvals:** risky actions show up as glowing cards with **Approve / Deny** buttons.
 - **Sidebar:** status, quick actions (screenshot, check watchlist, new chat, stop), scheduled tasks you can cancel, and the **Phone alerts** switch.
 - **Appearance:** choose **Auto** (follows your Mac), **Light** or **Dark** at the bottom of the sidebar. You get desktop notifications when the window is in the background.
+
+### Answers with sources, search modes and Team mode
+
+Steward also works like an answer engine. For questions about facts, news, prices or comparisons, it searches the web, reads the best pages, and answers with numbered citations. Under each answer it shows **source cards** you can click, and **Related** follow-up questions you can tap to ask next. Search is free and needs no key. If you want more reliable results, add `BRAVE_API_KEY=...` to `.env`; Brave Search has a free tier.
+
+The **search mode** chip in the chat box sets how it searches:
+
+| Mode | What it does |
+|---|---|
+| **Auto** | Searches when it needs to, or just does the task on your Mac |
+| **Web search** | Always searches and cites sources |
+| **Academic** | Prefers papers, preprints and university sources |
+| **Deep research** | Many searches from several angles, then a structured report with citations |
+
+**Team mode** (the **Team** chip) gives one task to **up to three models** at once, for example Claude, Gemini and a local Gemma:
+
+1. **Research:** each model works on the task on its own, in parallel, and writes its answer with sources.
+2. **Discuss:** each model reads the others' answers, points out mistakes and gaps, checks disputed facts, and revises its answer. You can choose 1 or 2 rounds.
+3. **Final answer:** the model you're chatting with writes one answer showing **where the team agrees and where it differs**. If the task asks for action on your Mac, it then does the work, with the usual approvals.
+
+![Team mode answer with sources](docs/team.png)
+
+The team card in the chat lets you read each model's research and discussion. Teammates can only search and read while they discuss; only the lead can act. Local models take turns, because only one fits in memory at a time, so a team of hosted models is faster.
 
 ### Phone app (iPhone and Android)
 
@@ -190,6 +214,7 @@ Settings live in `.env`. The wizard writes it; `.env.example` documents every op
 
 | Setting | Default | What it does |
 |---|---|---|
+| `BRAVE_API_KEY` | (empty) | Optional. Uses the Brave Search API for web search instead of the free default. |
 | `BRAIN_PROVIDER` | `ollama` | First model on a fresh install: `ollama`, or `none` to add models in the app. Models you add in the app are kept in `~/.steward/models.json` (keys in the Keychain). |
 | `OLLAMA_MODEL` | by RAM | Any local model with tool calling |
 | `AGENT_NAME` / `AGENT_AVATAR` | `Steward` / `droid` | Name and face in the app (`droid`, `cat`, `ghost`, `cloud`, `star`, …) |
@@ -222,6 +247,7 @@ scheduler.py (tasks, watchlist) ────────────────
 | `scheduler.py` | Scheduled tasks, watch jobs, hourly watchlist |
 | `channels.py`, `webserver.py`, `telegram_bot.py` | Routing between the Mac app, the phone app and Telegram |
 | `mobile.py` | Phone app: pairing, Tailscale access, push notifications |
+| `websearch.py`, `council.py` | Web search with citations; Team mode (multi-model discussion) |
 | `tools.py`, `vault.py`, `voice.py` | Custom tools, Keychain logins, Whisper transcription |
 | `web/` | Desktop app (React + Vite; `web/dist` is prebuilt) |
 | `memory.example/` | Templates copied to `memory/` on first run |
