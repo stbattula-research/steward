@@ -1,0 +1,13 @@
+{
+  "_help": "Your own permission rules, checked before the defaults. Format: \"ToolName\" or \"ToolName(argument pattern)\", * = wildcard. Built-in hard blocks (Keychain via shell, SSH keys, .env) can't be overridden.",
+  "allow": [
+    "Bash(git status*)",
+    "Bash(brew list*)"
+  ],
+  "ask": [
+    "mcp__browser__browser_type(*card*)"
+  ],
+  "block": [
+    "Bash(*git push --force*)"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "_help": "Extra tools (MCP servers) for the agent. Remove the leading underscore from a name to enable it. Every new tool asks for your approval until you allow it in rules.json (for example \"mcp__github__get_*\"). Find more at https://github.com/modelcontextprotocol/servers",
+  "mcpServers": {
+    "_github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer YOUR_GITHUB_TOKEN"
+      }
+    },
+    "_filesystem_documents": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/YOUR_MAC_USERNAME/Documents"
+      ]
+    }
+  }
+}

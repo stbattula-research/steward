@@ -1,0 +1,24 @@
+# Secrets and personal data: never commit
+.env
+.env.*
+!.env.example
+memory/
+
+# Environments and build output
+.venv/
+__pycache__/
+*.pyc
+web/node_modules/
+
+# macOS / editors
+.DS_Store
+.vscode/
+.idea/
+
+# Leftovers from older local versions
+_to_delete/
+setup.sh
+Start My Agent.command
+
+# Local folders created by other tools
+Claude outputs/

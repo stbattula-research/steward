@@ -1,0 +1,346 @@
+"""The agent's brain: a long-lived chat session plus one-off runs for scheduled
+tasks and proactive checks, all behind the same guardrails."""
+import asyncio
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+
+from claude_agent_sdk import (
+    AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, PermissionResultAllow,
+    PermissionResultDeny, ResultMessage, TextBlock, ToolUseBlock, create_sdk_mcp_server, tool,
+)
+
+import config
+import guardrails
+from tools import Channel, Secrets, build_server
+
+log = logging.getLogger("brain")
+
+# Only the built-in tools the agent actually uses. Everything else the CLI ships with
+# (sub-agents, plan mode, task lists, notebooks...) is left out so the prompt stays small;
+# that matters a lot for a local model.
+BUILTIN_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch"]
+
+# Browser actions that are rarely needed; hiding them shrinks every request.
+HIDDEN_BROWSER = ["browser_console_messages", "browser_network_request", "browser_network_requests",
+                  "browser_drag", "browser_drop", "browser_emulate_media", "browser_evaluate",
+                  "browser_run_code_unsafe", "browser_run_code", "browser_resize", "browser_install",
+                  "browser_pdf_save", "browser_find", "browser_hover"]
+
+
+def _system_prompt() -> str:
+    base = (config.ROOT / "prompts" / "system.md").read_text()
+    parts = [base.format(workspace=config.WORKSPACE, memory=config.MEMORY_DIR,
+                         owner=config.OWNER_NAME, agent=config.AGENT_NAME,
+                         today=datetime.now().strftime("%A, %B %d, %Y, %I:%M %p"),
+                         timezone=config.TIMEZONE)]
+    for name in ("about_me.md", "learned.md"):
+        f = config.MEMORY_DIR / name
+        if f.exists() and f.read_text().strip():
+            parts.append(f"\n## {name}\n{f.read_text()}")
+    playbooks = sorted((config.MEMORY_DIR / "playbooks").glob("*.md"))
+    if playbooks:
+        parts.append("\n## Playbooks available (Read the matching one before starting that kind of task)\n"
+                     + "\n".join(f"- {p}" for p in playbooks))
+    return "\n".join(parts)
+
+
+def _integrations() -> dict:
+    """Extra MCP servers from integrations.json (keys starting with '_' are ignored)."""
+    if not config.INTEGRATIONS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(config.INTEGRATIONS_FILE.read_text())
+        return {k: v for k, v in data.get("mcpServers", {}).items() if not k.startswith("_")}
+    except Exception as e:
+        log.error("integrations.json is invalid: %s", e)
+        return {}
+
+
+class BufferChannel:
+    """Collects a background run's messages so it only pings you if there's news."""
+    def __init__(self, real: Channel):
+        self.real, self.texts, self.files = real, [], []
+
+    async def send_text(self, text: str) -> None:
+        self.texts.append(text)
+
+    async def send_file(self, path: Path, caption: str = "") -> None:
+        self.files.append((path, caption))
+
+    async def ask_approval(self, summary: str) -> bool:
+        return False
+
+
+class Brain:
+    def __init__(self, channel: Channel):
+        self.channel = channel
+        self.client: ClaudeSDKClient | None = None
+        self.lock = asyncio.Lock()            # one model run at a time (one local model in RAM)
+        self.busy = False
+        self.interrupted = False
+        self.active: ClaudeSDKClient | None = None   # whichever session is running now
+        self.scheduler = None                 # set by telegram_bot after construction
+        self.recent_reports: list[str] = []   # automated results to show the chat session
+
+    # --------------------------------------------------------------- config --
+    def _brain_env(self) -> tuple[str | None, dict, float | None]:
+        """(model, env, budget) for the chosen provider."""
+        quiet = {   # no telemetry / helper traffic; helper calls use the same model
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
+            "DISABLE_TELEMETRY": "1",
+        }
+        if config.BRAIN_PROVIDER in ("ollama-cloud", "custom"):
+            base = config.BRAIN_BASE_URL or ("https://ollama.com" if config.BRAIN_PROVIDER == "ollama-cloud" else "")
+            return config.BRAIN_MODEL, {
+                **quiet,
+                "ANTHROPIC_BASE_URL": base,
+                "ANTHROPIC_AUTH_TOKEN": config.BRAIN_API_KEY,
+                "ANTHROPIC_API_KEY": "",
+                "ANTHROPIC_SMALL_FAST_MODEL": config.BRAIN_MODEL,
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": config.BRAIN_MODEL,
+            }, None
+        if config.BRAIN_PROVIDER == "ollama":
+            # Ollama speaks the Anthropic Messages API, so the same agent loop runs on local models.
+            return config.OLLAMA_MODEL, {
+                "ANTHROPIC_BASE_URL": config.OLLAMA_URL,
+                "ANTHROPIC_AUTH_TOKEN": "ollama",
+                "ANTHROPIC_API_KEY": "",
+                # Background helper calls (titles, summaries) use the same local model.
+                "ANTHROPIC_SMALL_FAST_MODEL": config.OLLAMA_MODEL,
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": config.OLLAMA_MODEL,
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
+                "DISABLE_TELEMETRY": "1",
+            }, None   # local = no $ cost, so no budget cap
+        return config.CLAUDE_MODEL, {"ANTHROPIC_API_KEY": config.ANTHROPIC_API_KEY}, config.MAX_BUDGET_USD
+
+    def _sched_server(self):
+        brain = self
+
+        @tool("schedule_task",
+              "Schedule work to run later on its own. mode='task' does the instructions and reports back "
+              "(e.g. reminders, daily summaries, recurring chores). mode='watch' is a read-only check that "
+              "only messages the owner if something needs attention (e.g. 'tell me when the price drops'). "
+              "Use cron for recurring (5 fields, the owner's local time, e.g. '0 8 * * 1-5') or run_at for one "
+              "time (ISO, e.g. '2026-10-03T17:30').",
+              {"type": "object", "properties": {
+                  "name": {"type": "string"}, "instructions": {"type": "string"},
+                  "cron": {"type": "string"}, "run_at": {"type": "string"},
+                  "mode": {"type": "string", "enum": ["task", "watch"]}},
+               "required": ["name", "instructions"]})
+        async def schedule_task(args):
+            try:
+                job = brain.scheduler.add(args["name"], args["instructions"], args.get("cron", ""),
+                                          args.get("run_at", ""), args.get("mode", "task"))
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"Couldn't schedule: {e}"}]}
+            return {"content": [{"type": "text", "text": f"Scheduled [{job['id']}].\n{brain.scheduler.describe()}"}]}
+
+        @tool("list_scheduled_tasks", "List the owner's scheduled tasks and when they run next.", {})
+        async def list_scheduled_tasks(args):
+            return {"content": [{"type": "text", "text": brain.scheduler.describe()}]}
+
+        @tool("cancel_scheduled_task", "Cancel a scheduled task by its id.", {"id": str})
+        async def cancel_scheduled_task(args):
+            ok = brain.scheduler.remove(args["id"])
+            return {"content": [{"type": "text", "text": "Cancelled." if ok else "No task with that id."}]}
+
+        return create_sdk_mcp_server("sched", tools=[schedule_task, list_scheduled_tasks, cancel_scheduled_task])
+
+    def _options(self, resume: str | None, channel: Channel, mode: str = "chat") -> ClaudeAgentOptions:
+        model, env, budget = self._brain_env()
+        servers = {
+            "me": build_server(channel),
+            "browser": {
+                "type": "stdio", "command": "npx",
+                "args": ["-y", "@playwright/mcp@latest", "--browser", config.BROWSER_CHANNEL,
+                         "--user-data-dir", str(config.BROWSER_PROFILE)],
+            },
+            **_integrations(),
+        }
+        if self.scheduler and mode == "chat":
+            servers["sched"] = self._sched_server()
+        local = config.BRAIN_PROVIDER == "ollama"
+        return ClaudeAgentOptions(
+            system_prompt=_system_prompt(),
+            model=model,
+            tools=BUILTIN_TOOLS,
+            strict_mcp_config=True,        # only our MCP servers, nothing else installed on the Mac
+            thinking={"type": "disabled"} if local else None,
+            cwd=str(config.WORKSPACE),
+            add_dirs=[str(config.HOME)],
+            permission_mode="default",
+            can_use_tool=self._permission_handler(channel, mode),
+            setting_sources=None,          # ignore any other Claude settings on this Mac
+            disallowed_tools=["AskUserQuestion", "mcp__claude-in-chrome", "mcp__computer-use"]
+                             + [f"mcp__browser__{t}" for t in HIDDEN_BROWSER],
+            max_turns=config.MAX_TURNS,
+            max_budget_usd=budget,
+            resume=resume,
+            env=env,
+            mcp_servers=servers,
+        )
+
+    # ------------------------------------------------------------ lifecycle --
+    async def start(self) -> None:
+        resume = None
+        if config.SESSION_FILE.exists():
+            resume = json.loads(config.SESSION_FILE.read_text()).get("session_id")
+        try:
+            self.client = ClaudeSDKClient(self._options(resume, self.channel))
+            await self.client.connect()
+        except Exception as e:  # stale session id etc.
+            log.warning("Resume failed (%s); starting fresh", e)
+            self.client = ClaudeSDKClient(self._options(None, self.channel))
+            await self.client.connect()
+
+    async def reset(self) -> None:
+        """Forget the current conversation (memory files are kept)."""
+        if self.client:
+            await self.client.disconnect()
+        config.SESSION_FILE.unlink(missing_ok=True)
+        self.client = ClaudeSDKClient(self._options(None, self.channel))
+        await self.client.connect()
+
+    async def stop_current(self) -> None:
+        if self.active and self.busy:
+            self.interrupted = True
+            await self.active.interrupt()
+
+    async def warm_up(self) -> None:
+        """Local models: process the (large, fixed) instructions + tool list once at startup,
+        so Ollama has them cached and your first real message starts fast."""
+        if config.BRAIN_PROVIDER != "ollama":
+            return
+        async with self.lock:
+            self.busy = True
+            await self._hook("set_status", True, "Warming up")
+            client = ClaudeSDKClient(self._options(None, BufferChannel(self.channel), "chat"))
+            try:
+                await client.connect()
+                await client.query("Warm-up check. Reply with just: ok")
+                async for _ in client.receive_response():
+                    pass
+                log.info("warm-up done")
+            except Exception:
+                log.exception("warm-up failed")
+            finally:
+                await client.disconnect()
+                self.busy = False
+                await self._hook("set_status", False, "")
+
+    async def close(self) -> None:
+        if self.client:
+            await self.client.disconnect()
+
+    # ----------------------------------------------------------- permissions --
+    def _permission_handler(self, channel: Channel, mode: str):
+        evaluate = guardrails.evaluate_watch if mode == "watch" else guardrails.evaluate
+
+        async def can_use_tool(tool_name, tool_input, context):
+            v = evaluate(tool_name, tool_input)
+            log.info("[%s] tool %s -> %s %s", mode, tool_name, v.decision, v.reason)
+            if v.decision == guardrails.ALLOW:
+                if config.VERBOSE_STEPS and mode != "watch":
+                    await channel.send_text("🔧 " + Secrets.redact(guardrails.describe(tool_name, tool_input))[:300])
+                return PermissionResultAllow()
+            if v.decision == guardrails.BLOCK:
+                return PermissionResultDeny(message=f"Blocked by guardrails: {v.reason}")
+            ok = await channel.ask_approval(
+                f"Needs approval: {v.reason}\n\n{Secrets.redact(guardrails.describe(tool_name, tool_input))}")
+            return PermissionResultAllow() if ok else PermissionResultDeny(
+                message="The owner denied this action. Do not retry it; explain or ask what to do instead.")
+        return can_use_tool
+
+    # --------------------------------------------------------------- running --
+    async def _stream(self, client: ClaudeSDKClient, channel: Channel, save_session: bool) -> None:
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock) and block.text.strip():
+                        await channel.send_text(Secrets.redact(block.text))
+                    elif isinstance(block, ToolUseBlock):
+                        log.info("call %s %s", block.name, Secrets.redact(json.dumps(block.input)[:500]))
+                        if hasattr(channel, "on_tool"):
+                            await channel.on_tool(block.name, Secrets.redact(
+                                guardrails.describe(block.name, block.input))[:300])
+            elif isinstance(msg, ResultMessage):
+                if save_session:
+                    config.SESSION_FILE.write_text(json.dumps({"session_id": msg.session_id}))
+                log.info("done turns=%s cost=$%s", msg.num_turns, msg.total_cost_usd)
+                if msg.is_error and self.interrupted:
+                    self.interrupted = False          # you pressed Stop; "Stopped." was already shown
+                elif msg.is_error:
+                    await channel.send_text(f"⚠️ Stopped: {msg.subtype}. {'; '.join(msg.errors or [])}".strip())
+
+    async def _hook(self, name: str, *args) -> None:
+        fn = getattr(self.channel, name, None)
+        if fn:
+            res = fn(*args)
+            if asyncio.iscoroutine(res):
+                await res
+
+    async def handle(self, text: str, origin: str = "telegram") -> None:
+        """A message from the owner, in the ongoing conversation."""
+        async with self.lock:
+            self.busy = True
+            await self._hook("begin", origin)
+            await self._hook("set_status", True, "Working")
+            try:
+                if self.recent_reports:
+                    text = ("[For context, automated runs since we last talked reported:\n"
+                            + "\n".join(self.recent_reports[-5:]) + "]\n\n" + text)
+                    self.recent_reports.clear()
+                self.active = self.client
+                await self.client.query(text)
+                await self._stream(self.client, self.channel, save_session=True)
+            except Exception as e:
+                log.exception("request failed")
+                await self.channel.send_text(f"⚠️ Error: {Secrets.redact(str(e))[:500]}")
+            finally:
+                self.busy = False
+                await self._hook("set_status", False, "")
+
+    async def run_once(self, instructions: str, mode: str = "task", label: str = "Scheduled task") -> bool:
+        """A scheduled task or proactive check, in its own fresh session.
+        Returns True if anything was reported to the owner."""
+        async with self.lock:
+            self.busy = True
+            await self._hook("begin", "background")
+            await self._hook("set_status", True, label)
+            buf = BufferChannel(self.channel)
+            out: Channel = buf if mode == "watch" else self.channel
+            prompt = (f"[Automated run: '{label}'. {config.OWNER_NAME} is probably away from the Mac.]\n\n{instructions}")
+            if mode == "watch":
+                prompt += (f"\n\nThis is a READ-ONLY check. If nothing needs {config.OWNER_NAME}'s attention, reply with exactly: "
+                           "NOTHING. Otherwise reply with a short heads-up and what he may want to do.")
+            else:
+                await self.channel.send_text(f"⏰ {label}")
+            client = ClaudeSDKClient(self._options(None, out, mode))
+            try:
+                await client.connect()
+                self.active = client
+                await client.query(prompt)
+                await self._stream(client, out, save_session=False)
+            except Exception as e:
+                log.exception("automated run failed")
+                await self.channel.send_text(f"⚠️ '{label}' failed: {Secrets.redact(str(e))[:300]}")
+            finally:
+                await client.disconnect()
+                self.busy = False
+                await self._hook("set_status", False, "")
+
+            if mode == "watch":
+                final = (buf.texts[-1] if buf.texts else "").strip()
+                if final and "NOTHING" not in final.upper()[:20]:
+                    await self.channel.send_text(f"👀 {label}\n{final}")
+                    for path, caption in buf.files:
+                        await self.channel.send_file(path, caption)
+                    self.recent_reports.append(f"{label}: {final[:400]}")
+                    return True
+                return False
+            self.recent_reports.append(f"{label}: ran at {datetime.now():%I:%M %p}")
+            return True

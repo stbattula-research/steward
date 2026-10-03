@@ -1,0 +1,494 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { BorderBeam } from 'border-beam';
+import { BotAvatar } from 'bot-avatars';
+import { ThinkingOrb } from 'thinking-orbs';
+import { VoiceBeam } from 'voice-glow';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+import { transcribe, uploadFile, useAgent } from './useAgent.js';
+import { Icon } from './icons.jsx';
+import MemoryPanel from './MemoryPanel.jsx';
+
+marked.setOptions({ breaks: true, gfm: true });
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'A') { node.setAttribute('target', '_blank'); node.setAttribute('rel', 'noreferrer'); }
+});
+
+/* ---------------------------------------------------------------- helpers -- */
+
+// Which thinking-orb animation fits what the agent is doing right now.
+function orbFor(tool) {
+  const n = tool?.name || '';
+  if (!n) return 'solving';
+  if (n.includes('request_approval')) return 'breathing';
+  if (n.includes('schedule') || n.startsWith('mcp__') && !n.startsWith('mcp__browser') && !n.startsWith('mcp__me')) return 'connecting';
+  if (n.includes('browser_type') || n.includes('fill_form') || n.includes('press_key')) return 'weaving';
+  if (n.includes('screenshot')) return 'shaping';
+  if (n.startsWith('mcp__browser') || n.startsWith('Web') || ['Read', 'Glob', 'Grep'].includes(n)) return 'searching';
+  if (['Write', 'Edit', 'MultiEdit'].includes(n) || n.includes('remember')) return 'composing';
+  return 'working';
+}
+
+function activityLabel(tool, statusLabel) {
+  const n = tool?.name || '';
+  if (!n) return statusLabel && statusLabel !== 'Working' ? statusLabel : 'Thinking';
+  if (n === 'Bash') return 'Running a command';
+  if (n.startsWith('mcp__browser')) return 'Using the browser';
+  if (n.startsWith('Web')) return 'Searching the web';
+  if (['Read', 'Glob', 'Grep'].includes(n)) return 'Reading files';
+  if (['Write', 'Edit', 'MultiEdit'].includes(n)) return 'Writing';
+  if (n.includes('screenshot')) return 'Looking at the screen';
+  if (n.includes('request_approval')) return 'Waiting for your approval';
+  if (n.includes('schedule')) return 'Scheduling';
+  return 'Working';
+}
+
+function relTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const diff = (d - Date.now()) / 60000;
+  const fmt = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  if (Math.abs(diff) < 60) return fmt.format(Math.round(diff), 'minute');
+  if (Math.abs(diff) < 60 * 24) return fmt.format(Math.round(diff / 60), 'hour');
+  return d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+const clock = (iso) => (iso ? new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '');
+
+/** Group consecutive tool calls into one collapsible "steps" row. */
+function groupEvents(events) {
+  const out = [];
+  for (const ev of events) {
+    if (ev.type === 'tool') {
+      const last = out[out.length - 1];
+      if (last?.type === 'steps') last.items.push(ev);
+      else out.push({ type: 'steps', id: `s-${ev.id}`, items: [ev] });
+    } else out.push(ev);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------- components -- */
+
+function Markdown({ text }) {
+  const html = useMemo(() => DOMPurify.sanitize(marked.parse(text || '')), [text]);
+  return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function Steps({ items, live }) {
+  const [open, setOpen] = useState(false);
+  const last = items[items.length - 1];
+  return (
+    <div className={`steps ${open ? 'open' : ''}`}>
+      <button className="steps-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+        {!live && <Icon name="check" size={14} />}
+        <span className="steps-count">{items.length} {items.length === 1 ? 'step' : 'steps'}</span>
+        {!open && <span className="steps-last">{last.summary.replace(/\s*\n\s*/g, ' ')}</span>}
+        <Icon name="chevron" size={14} className="chev" />
+      </button>
+      {open && (
+        <ol className="steps-list">
+          {items.map((s) => <li key={s.id}><code>{s.summary}</code></li>)}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+function Approval({ ev, onAnswer }) {
+  const pending = ev.approved === undefined;
+  const [title, ...rest] = (ev.summary || '').split('\n');
+  return (
+    <div className="approval-wrap">
+      <BorderBeam size="pulse-outside" colorVariant="sunset" theme="auto" active={pending} strength={0.9}>
+        <div className={`approval ${pending ? '' : 'done'}`}>
+          <div className="approval-head">
+            <Icon name="shield" size={16} />
+            <span>Approval needed</span>
+            <span className="approval-reason">· {title.replace(/^Needs approval:\s*/i, '')}</span>
+          </div>
+          {rest.join('\n').trim() && <pre className="approval-body">{rest.join('\n').trim()}</pre>}
+          {pending ? (
+            <div className="approval-actions">
+              <button className="btn ghost" onClick={() => onAnswer(ev.aid, false)}>Deny</button>
+              <button className="btn primary" onClick={() => onAnswer(ev.aid, true)}>Approve</button>
+            </div>
+          ) : (
+            <div className={`chip ${ev.approved ? 'ok' : 'no'}`}>
+              {ev.approved === true ? 'Approved' : ev.approved === false ? 'Denied' : 'Answered on your phone'}
+            </div>
+          )}
+        </div>
+      </BorderBeam>
+    </div>
+  );
+}
+
+function FileCard({ ev }) {
+  const url = `/files/${ev.fid}`;
+  if (ev.image) {
+    return (
+      <figure className="file-img">
+        <a href={url} target="_blank" rel="noreferrer"><img src={url} alt={ev.caption || ev.name} loading="lazy" /></a>
+        {ev.caption && <figcaption>{ev.caption}</figcaption>}
+      </figure>
+    );
+  }
+  return (
+    <a className="file-chip" href={url} download={ev.name}>
+      <Icon name="file" size={16} />
+      <span>{ev.name}</span>
+      {ev.caption && <span className="muted">· {ev.caption}</span>}
+      <Icon name="download" size={14} />
+    </a>
+  );
+}
+
+function Message({ ev }) {
+  if (ev.role === 'user') {
+    return (
+      <div className="msg user">
+        <div className="bubble"><Markdown text={ev.text} /></div>
+        <div className="meta">{ev.source === 'telegram' && <span className="tag">via Telegram</span>}{clock(ev.ts)}</div>
+      </div>
+    );
+  }
+  if (ev.role === 'system') return <div className="msg system">{ev.text}</div>;
+  return (
+    <div className="msg assistant">
+      <Markdown text={ev.text} />
+    </div>
+  );
+}
+
+function EmptyState({ info, onPick }) {
+  const ideas = [
+    "What's using the most space on my Mac?",
+    'Take a screenshot and tell me what apps are open',
+    'Every weekday at 8am, send me my calendar for the day',
+    'Open YouTube and play some lo-fi music',
+  ];
+  return (
+    <div className="empty">
+      <BotAvatar type={info.avatar} state="default" face="mouth" size={112} theme="auto" />
+      <h1>What can I do for you?</h1>
+      <p className="muted">I'm running on your Mac. Ask me to do something, or try one of these.</p>
+      <div className="ideas">
+        {ideas.map((t) => <button key={t} className="idea" onClick={() => onPick(t)}>{t}</button>)}
+      </div>
+    </div>
+  );
+}
+
+function Composer({ busy, connected, onSend, onStop }) {
+  const [text, setText] = useState('');
+  const [files, setFiles] = useState([]);       // {name, path} | {name, uploading:true}
+  const [voice, setVoice] = useState('idle');   // idle | recording | transcribing
+  const [stream, setStream] = useState(null);
+  const [error, setError] = useState('');
+  const rec = useRef(null);
+  const ta = useRef(null);
+  const fileInput = useRef(null);
+
+  useEffect(() => {                              // auto-grow textarea
+    const el = ta.current; if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 220) + 'px';
+  }, [text]);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === '/' && document.activeElement?.tagName !== 'TEXTAREA') { e.preventDefault(); ta.current?.focus(); } };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const ready = files.every((f) => f.path);
+  const canSend = connected && ready && (text.trim() || files.length);
+
+  function submit() {
+    if (!canSend) return;
+    const notes = files.map((f) => `[Attached file saved at: ${f.path}]`).join('\n');
+    onSend([text.trim(), notes].filter(Boolean).join('\n\n'));
+    setText(''); setFiles([]); setError('');
+  }
+
+  async function addFiles(list) {
+    for (const file of list) {
+      setFiles((f) => [...f, { name: file.name, uploading: true }]);
+      try {
+        const res = await uploadFile(file);
+        setFiles((f) => f.map((x) => (x.name === file.name && x.uploading ? { name: res.name, path: res.path } : x)));
+      } catch {
+        setFiles((f) => f.filter((x) => x.name !== file.name));
+        setError(`Couldn't attach ${file.name}`);
+      }
+    }
+  }
+
+  async function toggleMic() {
+    setError('');
+    if (voice === 'recording') { rec.current?.stop(); return; }
+    if (voice !== 'idle') return;
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const chunks = [];
+      const r = new MediaRecorder(s);
+      r.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+      r.onstop = async () => {
+        s.getTracks().forEach((t) => t.stop());
+        setStream(null);
+        setVoice('transcribing');
+        try {
+          const said = await transcribe(new Blob(chunks, { type: r.mimeType }));
+          setText((t) => (t ? `${t} ${said}` : said));
+          ta.current?.focus();
+        } catch (e) { setError(e.message); }
+        setVoice('idle');
+      };
+      rec.current = r;
+      r.start();
+      setStream(s);
+      setVoice('recording');
+    } catch {
+      setError('Microphone access was blocked. Allow it in your browser settings.');
+    }
+  }
+
+  return (
+    <div
+      className="composer-wrap"
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => { e.preventDefault(); addFiles([...e.dataTransfer.files]); }}
+    >
+      {error && <div className="composer-error">{error}</div>}
+      <VoiceBeam stream={stream} processing={voice === 'transcribing'} active={voice !== 'idle'} idle={0} theme="auto" colorVariant="colorful">
+        <div className="composer">
+          {files.length > 0 && (
+            <div className="attachments">
+              {files.map((f) => (
+                <span key={f.name} className={`att ${f.uploading ? 'loading' : ''}`}>
+                  {f.uploading ? <ThinkingOrb state="working" size={20} theme="auto" /> : <Icon name="file" size={14} />}
+                  {f.name}
+                  {!f.uploading && <button aria-label={`Remove ${f.name}`} onClick={() => setFiles(files.filter((x) => x !== f))}><Icon name="x" size={12} /></button>}
+                </span>
+              ))}
+            </div>
+          )}
+          <textarea
+            ref={ta}
+            rows={1}
+            value={text}
+            placeholder={voice === 'recording' ? 'Listening… tap the mic again to finish' : voice === 'transcribing' ? 'Transcribing…' : 'Ask your agent to do something'}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
+            onPaste={(e) => { const f = [...e.clipboardData.files]; if (f.length) { e.preventDefault(); addFiles(f); } }}
+          />
+          <div className="composer-bar">
+            <div className="left">
+              <button className="icon-btn" title="Attach files" onClick={() => fileInput.current.click()}><Icon name="paperclip" /></button>
+              <input ref={fileInput} type="file" multiple hidden onChange={(e) => { addFiles([...e.target.files]); e.target.value = ''; }} />
+              <button className={`icon-btn ${voice === 'recording' ? 'live' : ''}`} title={voice === 'recording' ? 'Stop recording' : 'Voice'} onClick={toggleMic} disabled={voice === 'transcribing'}>
+                <Icon name={voice === 'recording' ? 'stop' : 'mic'} />
+              </button>
+            </div>
+            <div className="right">
+              {busy && <button className="btn ghost sm" onClick={onStop}><Icon name="stop" size={12} /> Stop</button>}
+              <button className="send" disabled={!canSend} onClick={submit} aria-label="Send"><Icon name="arrowUp" /></button>
+            </div>
+          </div>
+        </div>
+      </VoiceBeam>
+      <div className="hint">Enter to send · Shift + Enter for a new line · drop files to attach</div>
+    </div>
+  );
+}
+
+function PhoneSwitch({ prefs, send }) {
+  const modes = [
+    { id: 'auto', label: 'Auto', tip: 'Phone gets heads-ups when you have been away from this app for 10 minutes' },
+    { id: 'always', label: 'Always', tip: 'Everything also goes to Telegram' },
+    { id: 'off', label: 'Off', tip: 'Only replies to messages you send from your phone' },
+  ];
+  return (
+    <div className="phone-switch">
+      <div className="phone-label"><Icon name="phone" size={14} />Phone alerts</div>
+      <div className="seg" role="radiogroup" aria-label="Phone alerts">
+        {modes.map((m) => (
+          <button key={m.id} role="radio" aria-checked={prefs.phone_mode === m.id} title={m.tip}
+            className={prefs.phone_mode === m.id ? 'on' : ''}
+            onClick={() => send({ type: 'set_pref', key: 'phone_mode', value: m.id })}>
+            {m.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, onMemory, memoryCount }) {
+  const [confirm, setConfirm] = useState(null);
+  const hour = new Date().getHours();
+  const avatarState = status.busy ? 'working' : hour >= 23 || hour < 6 ? 'sleeping' : 'default';
+  return (
+    <aside className={`sidebar ${open ? 'open' : ''}`}>
+      <button className="icon-btn close-side" onClick={onClose} aria-label="Close"><Icon name="x" /></button>
+      <BorderBeam size="md" colorVariant="ocean" theme="auto" active={status.busy} strength={0.85}>
+        <div className="agent-card">
+          <BotAvatar type={info.avatar} state={avatarState} face="mouth" size={84} theme="auto" />
+          <div className="agent-name">{info.agent}</div>
+          <div className="agent-status">
+            <span className={`dot ${!connected ? 'off' : status.busy ? 'busy' : 'on'}`} />
+            {!connected ? 'Reconnecting…' : status.busy ? (status.label || 'Working') : 'Ready'}
+          </div>
+          {info.model && <div className="agent-model">{info.model}</div>}
+        </div>
+      </BorderBeam>
+
+      <div className="section">
+        <div className="section-title">Quick actions</div>
+        <div className="actions">
+          <button className="action" onClick={() => send({ type: 'screen' })}><Icon name="monitor" />Screenshot</button>
+          <button className="action" onClick={() => send({ type: 'watch' })}><Icon name="eye" />Check watchlist</button>
+          <button className="action" onClick={() => send({ type: 'new' })}><Icon name="plus" />New chat</button>
+          <button className="action" onClick={() => send({ type: 'stop' })} disabled={!status.busy}><Icon name="stop" />Stop</button>
+        </div>
+        <button className="memory-btn" onClick={onMemory}>
+          <Icon name="book" />
+          <span>Memory &amp; playbooks</span>
+          <span className="count">{memoryCount}</span>
+          <Icon name="chevron" size={14} />
+        </button>
+      </div>
+
+      <div className="section grow">
+        <div className="section-title">Scheduled <span className="count">{tasks.length}</span></div>
+        {tasks.length === 0 ? (
+          <p className="muted small">Nothing scheduled. Try “remind me at 5pm to…” or “every morning…”.</p>
+        ) : (
+          <ul className="tasks">
+            {tasks.map((t) => (
+              <li key={t.id} className="task">
+                <div className="task-top">
+                  <span className={`mode ${t.mode}`}>{t.mode === 'watch' ? 'Watch' : 'Task'}</span>
+                  <span className="task-name">{t.name}</span>
+                </div>
+                <div className="task-when">{t.next_run ? `Next ${relTime(t.next_run)}` : 'Paused'}{t.cron ? ' · repeats' : ''}</div>
+                <button
+                  className={`task-x ${confirm === t.id ? 'confirm' : ''}`}
+                  onClick={() => (confirm === t.id ? (send({ type: 'cancel_task', id: t.id }), setConfirm(null)) : setConfirm(t.id))}
+                  onMouseLeave={() => confirm === t.id && setConfirm(null)}
+                  aria-label={`Cancel ${t.name}`}
+                >
+                  {confirm === t.id ? 'Cancel?' : <Icon name="x" size={12} />}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="side-foot">
+        {info.telegram && <PhoneSwitch prefs={prefs} send={send} />}
+        <div className="tg-line">
+          <span className={`dot ${info.telegram ? 'on' : 'off'}`} />
+          {info.telegram ? 'Telegram connected' : 'Telegram not set up (optional)'}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+/* -------------------------------------------------------------------- app -- */
+
+export default function App() {
+  const { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, send } = useAgent();
+  const [sideOpen, setSideOpen] = useState(false);
+  const [memOpen, setMemOpen] = useState(false);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2600);
+    return () => clearTimeout(t);
+  }, [toast, setToast]);
+  const thread = useRef(null);
+  const stick = useRef(true);
+  const items = useMemo(() => groupEvents(events), [events]);
+  const lastSteps = [...items].reverse().find((x) => x.type === 'steps');
+
+  useEffect(() => { document.title = status.busy ? `● ${info.agent}` : info.agent; }, [status.busy, info.agent]);
+
+  useEffect(() => {                         // keep scrolled to bottom unless reading back
+    const el = thread.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [items, status.busy]);
+
+  useEffect(() => {                         // desktop notification when the window isn't focused
+    const onEv = (e) => {
+      const ev = e.detail;
+      if (document.hasFocus() || !('Notification' in window) || Notification.permission !== 'granted') return;
+      if (ev.type === 'approval') new Notification(`${info.agent} needs your approval`, { body: ev.summary.slice(0, 140) });
+      else if (ev.type === 'message' && ev.role === 'assistant') new Notification(info.agent, { body: ev.text.slice(0, 140) });
+    };
+    window.addEventListener('agent-event', onEv);
+    return () => window.removeEventListener('agent-event', onEv);
+  }, [info.agent]);
+
+  function sendText(text) {
+    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+    stick.current = true;
+    send({ type: 'send', text });
+  }
+
+  return (
+    <div className="app">
+      <Sidebar info={info} status={status} tasks={tasks} connected={connected} send={send} open={sideOpen}
+        onClose={() => setSideOpen(false)} prefs={prefs}
+        onMemory={() => { setMemOpen(true); setSideOpen(false); send({ type: 'memory_get' }); }}
+        memoryCount={memory.files.length} />
+      {memOpen && <MemoryPanel memory={memory} send={send} onClose={() => setMemOpen(false)} />}
+      {toast && <div key={toast.key} className={`toast ${toast.error ? 'err' : ''}`} role="status">{toast.text}</div>}
+      {sideOpen && <div className="scrim" onClick={() => setSideOpen(false)} />}
+      <main className="main">
+        <header className="topbar">
+          <button className="icon-btn menu" onClick={() => setSideOpen(true)} aria-label="Open sidebar"><Icon name="menu" /></button>
+          <div className="topbar-title">
+            <BotAvatar type={info.avatar} state={status.busy ? 'working' : 'default'} size={26} theme="auto" />
+            <span>{info.agent}</span>
+          </div>
+          {!connected && <span className="chip warn">Reconnecting…</span>}
+        </header>
+
+        <div className="thread" ref={thread} onScroll={(e) => {
+          const el = e.currentTarget;
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        }}>
+          <div className="thread-inner">
+            {items.length === 0 ? (
+              <EmptyState info={info} onPick={sendText} />
+            ) : (
+              items.map((ev) => {
+                if (ev.type === 'steps') return <Steps key={ev.id} items={ev.items} live={status.busy && ev === lastSteps && items[items.length - 1] === ev} />;
+                if (ev.type === 'message') return <Message key={ev.id} ev={ev} />;
+                if (ev.type === 'approval') return <Approval key={ev.id} ev={ev} onAnswer={(aid, approved) => send({ type: 'approve', aid, approved })} />;
+                if (ev.type === 'file') return <FileCard key={ev.id} ev={ev} />;
+                if (ev.type === 'divider') return <div key={ev.id} className="divider"><span>{ev.text}</span></div>;
+                return null;
+              })
+            )}
+            {status.busy && (
+              <div className="activity" aria-live="polite">
+                <ThinkingOrb state={orbFor(lastTool)} size={64} theme="auto" />
+                <div>
+                  <div className="activity-label">{activityLabel(lastTool, status.label)}…</div>
+                  {lastTool && <div className="activity-detail">{lastTool.summary.split('\n').slice(-1)[0].slice(0, 120)}</div>}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <Composer busy={status.busy} connected={connected} onSend={sendText} onStop={() => send({ type: 'stop' })} />
+      </main>
+    </div>
+  );
+}
