@@ -45,7 +45,7 @@ RISKY_BASH = [
     (r">\s*~?/?(etc|Library|System)/", "writes to a system folder"),
 ]
 
-SENSITIVE_PATHS = [r"/\.ssh/", r"Library/Keychains", r"/\.steward/", r"\.env$", r"/\.aws/", r"/\.gnupg/"]
+SENSITIVE_PATHS = [r"/\.ssh(/|$)", r"Library/Keychains", r"/\.steward(/|$)", r"\.env$", r"/\.aws(/|$)", r"/\.gnupg(/|$)"]
 
 # Read-only / harmless tools.
 SAFE_TOOLS = {

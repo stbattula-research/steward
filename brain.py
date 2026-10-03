@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from claude_agent_sdk import (
-    AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, PermissionResultAllow,
+    AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher, PermissionResultAllow,
     PermissionResultDeny, ResultMessage, TextBlock, ToolUseBlock, create_sdk_mcp_server, tool,
 )
 
@@ -23,6 +23,22 @@ log = logging.getLogger("brain")
 BUILTIN_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch"]
 
 # Browser actions that are rarely needed; hiding them shrinks every request.
+# Same action repeated this many times in one task = the agent is stuck; make it change course.
+MAX_REPEATS = 3
+
+CONTEXT_FULL = ("exceed_context_size", "exceeds the available context", "prompt is too long",
+                "context length", "maximum context")
+
+
+def _context_env(window: int) -> dict:
+    """Tell the engine the model's real memory size, so it summarises older steps
+    before the conversation overflows (it assumes a much bigger window for unknown models)."""
+    if window <= 0:
+        return {}
+    return {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(window),
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(int(window * 0.75))}
+
+
 HIDDEN_BROWSER = ["browser_console_messages", "browser_network_request", "browser_network_requests",
                   "browser_drag", "browser_drop", "browser_emulate_media", "browser_evaluate",
                   "browser_run_code_unsafe", "browser_run_code", "browser_resize", "browser_install",
@@ -80,6 +96,8 @@ class Brain:
         self.lock = asyncio.Lock()            # one model run at a time (one local model in RAM)
         self.busy = False
         self.interrupted = False
+        self.repeats: dict[str, int] = {}     # per-task count of identical actions (loop guard)
+        self.context_full = False
         self.active: ClaudeSDKClient | None = None   # whichever session is running now
         self.scheduler = None                 # set by telegram_bot after construction
         self.recent_reports: list[str] = []   # automated results to show the chat session
@@ -101,6 +119,7 @@ class Brain:
                 "ANTHROPIC_API_KEY": "",
                 "ANTHROPIC_SMALL_FAST_MODEL": config.BRAIN_MODEL,
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL": config.BRAIN_MODEL,
+                **_context_env(config.BRAIN_CONTEXT_TOKENS),
             }, None
         if config.BRAIN_PROVIDER == "ollama":
             # Ollama speaks the Anthropic Messages API, so the same agent loop runs on local models.
@@ -111,9 +130,8 @@ class Brain:
                 # Background helper calls (titles, summaries) use the same local model.
                 "ANTHROPIC_SMALL_FAST_MODEL": config.OLLAMA_MODEL,
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL": config.OLLAMA_MODEL,
-                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-                "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
-                "DISABLE_TELEMETRY": "1",
+                **quiet,
+                **_context_env(config.OLLAMA_CONTEXT),
             }, None   # local = no $ cost, so no budget cap
         return config.CLAUDE_MODEL, {"ANTHROPIC_API_KEY": config.ANTHROPIC_API_KEY}, config.MAX_BUDGET_USD
 
@@ -152,18 +170,22 @@ class Brain:
 
     def _options(self, resume: str | None, channel: Channel, mode: str = "chat") -> ClaudeAgentOptions:
         model, env, budget = self._brain_env()
+        local = config.BRAIN_PROVIDER == "ollama"
+        decide = self._decider(channel, mode)
+        browser_args = ["-y", "@playwright/mcp@latest", "--browser", config.BROWSER_CHANNEL,
+                        "--user-data-dir", str(config.BROWSER_PROFILE),
+                        "--output-dir", str(config.DOWNLOADS)]
+        if local:
+            # Don't attach a full page dump to every click; the agent asks for one
+            # (browser_snapshot) when it needs to look. Keeps local models within memory.
+            browser_args += ["--snapshot-mode", "none"]
         servers = {
             "me": build_server(channel),
-            "browser": {
-                "type": "stdio", "command": "npx",
-                "args": ["-y", "@playwright/mcp@latest", "--browser", config.BROWSER_CHANNEL,
-                         "--user-data-dir", str(config.BROWSER_PROFILE)],
-            },
+            "browser": {"type": "stdio", "command": "npx", "args": browser_args},
             **_integrations(),
         }
         if self.scheduler and mode == "chat":
             servers["sched"] = self._sched_server()
-        local = config.BRAIN_PROVIDER == "ollama"
         return ClaudeAgentOptions(
             system_prompt=_system_prompt(),
             model=model,
@@ -173,7 +195,9 @@ class Brain:
             cwd=str(config.WORKSPACE),
             add_dirs=[str(config.HOME)],
             permission_mode="default",
-            can_use_tool=self._permission_handler(channel, mode),
+            can_use_tool=self._permission_handler(decide),
+            hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[self._guard_hook(decide)],
+                                              timeout=config.APPROVAL_TIMEOUT_SEC + 60)]},
             setting_sources=None,          # ignore any other Claude settings on this Mac
             disallowed_tools=["AskUserQuestion", "mcp__claude-in-chrome", "mcp__computer-use"]
                              + [f"mcp__browser__{t}" for t in HIDDEN_BROWSER],
@@ -237,22 +261,52 @@ class Brain:
             await self.client.disconnect()
 
     # ----------------------------------------------------------- permissions --
-    def _permission_handler(self, channel: Channel, mode: str):
+    def _decider(self, channel: Channel, mode: str):
+        """One place that decides every action: loop guard, then guardrails (allow / ask / block).
+        Returns async (tool_name, tool_input) -> (allowed, message)."""
         evaluate = guardrails.evaluate_watch if mode == "watch" else guardrails.evaluate
 
-        async def can_use_tool(tool_name, tool_input, context):
+        async def decide(tool_name: str, tool_input: dict) -> tuple[bool, str]:
+            # Loop guard: small models sometimes retry the same failing action forever.
+            target = (tool_input.get("element") or tool_input.get("url") or tool_input.get("command")
+                      or json.dumps(tool_input, sort_keys=True))
+            key = f"{tool_name}:{str(target)[:200]}"
+            self.repeats[key] = self.repeats.get(key, 0) + 1
+            if self.repeats[key] > MAX_REPEATS and tool_name != "mcp__browser__browser_snapshot":
+                log.info("loop guard stopped %s", key)
+                return False, (f"You've already tried this {MAX_REPEATS} times and it isn't working. Don't repeat it. "
+                               f"Check whether it already succeeded (for downloads, look in {config.DOWNLOADS} "
+                               "and ~/Downloads), try a different approach, or stop and tell the owner what's blocking you.")
             v = evaluate(tool_name, tool_input)
             log.info("[%s] tool %s -> %s %s", mode, tool_name, v.decision, v.reason)
             if v.decision == guardrails.ALLOW:
                 if config.VERBOSE_STEPS and mode != "watch":
                     await channel.send_text("🔧 " + Secrets.redact(guardrails.describe(tool_name, tool_input))[:300])
-                return PermissionResultAllow()
+                return True, ""
             if v.decision == guardrails.BLOCK:
-                return PermissionResultDeny(message=f"Blocked by guardrails: {v.reason}")
+                return False, f"Blocked by guardrails: {v.reason}"
             ok = await channel.ask_approval(
                 f"Needs approval: {v.reason}\n\n{Secrets.redact(guardrails.describe(tool_name, tool_input))}")
-            return PermissionResultAllow() if ok else PermissionResultDeny(
-                message="The owner denied this action. Do not retry it; explain or ask what to do instead.")
+            return (True, "") if ok else (False, "The owner denied this action. Do not retry it; explain or ask what to do instead.")
+        return decide
+
+    def _guard_hook(self, decide):
+        """PreToolUse hook: runs for EVERY action, including the 'read-only' ones the engine
+        would otherwise approve on its own (e.g. reading files, `ls`, `cat`)."""
+        async def hook(input_data, tool_use_id, context):
+            allowed, message = await decide(input_data.get("tool_name", ""), input_data.get("tool_input") or {})
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow" if allowed else "deny",
+                "permissionDecisionReason": message or "Allowed by Steward guardrails",
+            }}
+        return hook
+
+    def _permission_handler(self, decide):
+        """Fallback for anything that still asks for permission after the hook."""
+        async def can_use_tool(tool_name, tool_input, context):
+            allowed, message = await decide(tool_name, tool_input)
+            return PermissionResultAllow() if allowed else PermissionResultDeny(message=message)
         return can_use_tool
 
     # --------------------------------------------------------------- running --
@@ -261,6 +315,10 @@ class Brain:
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock) and block.text.strip():
+                        if any(k in block.text.lower() for k in CONTEXT_FULL):
+                            self.context_full = True      # handled by the caller (fresh start + retry)
+                            log.warning("context full: %s", block.text[:200])
+                            continue
                         await channel.send_text(Secrets.redact(block.text))
                     elif isinstance(block, ToolUseBlock):
                         log.info("call %s %s", block.name, Secrets.redact(json.dumps(block.input)[:500]))
@@ -273,6 +331,11 @@ class Brain:
                 log.info("done turns=%s cost=$%s", msg.num_turns, msg.total_cost_usd)
                 if msg.is_error and self.interrupted:
                     self.interrupted = False          # you pressed Stop; "Stopped." was already shown
+                elif msg.is_error and (self.context_full or msg.subtype == "success"):
+                    pass                              # already reported (or retried) elsewhere
+                elif msg.is_error and msg.subtype == "error_max_turns":
+                    await channel.send_text(f"⚠️ I hit my limit of {config.MAX_TURNS} steps on this task. "
+                                            "Tell me to continue, or give me a narrower task.")
                 elif msg.is_error:
                     await channel.send_text(f"⚠️ Stopped: {msg.subtype}. {'; '.join(msg.errors or [])}".strip())
 
@@ -294,9 +357,29 @@ class Brain:
                     text = ("[For context, automated runs since we last talked reported:\n"
                             + "\n".join(self.recent_reports[-5:]) + "]\n\n" + text)
                     self.recent_reports.clear()
+                self.repeats = {}
+                self.context_full = False
                 self.active = self.client
                 await self.client.query(text)
                 await self._stream(self.client, self.channel, save_session=True)
+                if self.context_full:
+                    # The conversation outgrew the model's memory. Start fresh and retry once.
+                    await self.channel.send_text("That one filled up my working memory, so I've started "
+                                                 "a fresh conversation and I'm retrying the task now.")
+                    await self.reset()
+                    self.repeats = {}
+                    self.context_full = False
+                    self.active = self.client
+                    await self.client.query(
+                        text + "\n\n(Retry after running out of memory: work in small steps and only take "
+                        "browser snapshots when you need to look at the page.)")
+                    await self._stream(self.client, self.channel, save_session=True)
+                    if self.context_full:
+                        self.context_full = False
+                        await self.reset()
+                        await self.channel.send_text(
+                            "⚠️ This task is too big for the local model's memory. Try splitting it into "
+                            "smaller steps, or switch to a larger brain with Configure Steward.command.")
             except Exception as e:
                 log.exception("request failed")
                 await self.channel.send_text(f"⚠️ Error: {Secrets.redact(str(e))[:500]}")
@@ -311,6 +394,8 @@ class Brain:
             self.busy = True
             await self._hook("begin", "background")
             await self._hook("set_status", True, label)
+            self.repeats = {}
+            self.context_full = False
             buf = BufferChannel(self.channel)
             out: Channel = buf if mode == "watch" else self.channel
             prompt = (f"[Automated run: '{label}'. {config.OWNER_NAME} is probably away from the Mac.]\n\n{instructions}")

@@ -82,14 +82,15 @@ if [ "$PROVIDER" = "ollama" ]; then
   MODEL=$(envget OLLAMA_MODEL); MODEL=${MODEL:-gemma4:12b}
   step "Local model: Ollama + $MODEL"
   # The agent's instructions and tools need a large context window; keep the model loaded between messages.
-  launchctl setenv OLLAMA_CONTEXT_LENGTH 65536
+  CTX=$(envget OLLAMA_CONTEXT_LENGTH); CTX=${CTX:-65536}
+  launchctl setenv OLLAMA_CONTEXT_LENGTH "$CTX"
   launchctl setenv OLLAMA_KEEP_ALIVE 30m
   if [ -d "/Applications/Ollama.app" ]; then
     echo "   Using the Ollama app (restarting it so the settings apply)."
     osascript -e 'quit app "Ollama"' >/dev/null 2>&1 || true; sleep 3; open -a Ollama
   else
     need ollama
-    brew services restart ollama >/dev/null 2>&1 || (OLLAMA_CONTEXT_LENGTH=65536 nohup ollama serve >/dev/null 2>&1 &)
+    brew services restart ollama >/dev/null 2>&1 || (OLLAMA_CONTEXT_LENGTH="$CTX" nohup ollama serve >/dev/null 2>&1 &)
   fi
   for i in $(seq 1 30); do curl -s -o /dev/null http://localhost:11434/api/tags && break; sleep 1; done
   OLLAMA_BIN=$(command -v ollama || echo /Applications/Ollama.app/Contents/Resources/ollama)

@@ -34,6 +34,11 @@ BRAIN_API_KEY = os.getenv("BRAIN_API_KEY", "").strip()
 BRAIN_MODEL = os.getenv("BRAIN_MODEL", "").strip()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:12b")   # any tool-calling model from `ollama list`
+# How much the model can hold at once (tokens). Must match what Ollama is started with.
+OLLAMA_CONTEXT = int(os.getenv("OLLAMA_CONTEXT_LENGTH", "65536"))
+# Optional for ollama-cloud / custom brains: the model's real context window, so long tasks
+# get summarised before they overflow. 0 = let the engine decide.
+BRAIN_CONTEXT_TOKENS = int(os.getenv("BRAIN_CONTEXT_TOKENS", "0") or 0)
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL") or None          # None = SDK default
 MAX_TURNS = int(os.getenv("MAX_TURNS", "60"))            # tool steps per request
 MAX_BUDGET_USD = float(os.getenv("MAX_BUDGET_USD", "2.0"))  # spend cap per request
@@ -42,6 +47,7 @@ MAX_BUDGET_USD = float(os.getenv("MAX_BUDGET_USD", "2.0"))  # spend cap per requ
 HOME = Path.home()
 WORKSPACE = Path(os.getenv("AGENT_WORKSPACE", str(HOME / "AgentWorkspace"))).expanduser()
 INBOX = WORKSPACE / "inbox"            # files you send it from your phone land here
+DOWNLOADS = WORKSPACE / "downloads"    # files the agent downloads in its browser
 OUTBOX = WORKSPACE / "outbox"          # screenshots / files it produces
 MEMORY_DIR = ROOT / "memory"           # about_me.md, learned.md, playbooks/
 STATE_DIR = HOME / ".steward"          # session id, logs, browser profile
@@ -82,7 +88,7 @@ OPEN_APP_ON_START = _bool("OPEN_APP_ON_START", False)
 # Browser: Playwright MCP with a persistent profile so your logins stick.
 BROWSER_CHANNEL = os.getenv("BROWSER_CHANNEL", "chrome")  # chrome | msedge | chromium
 
-for d in (WORKSPACE, INBOX, OUTBOX, STATE_DIR, BROWSER_PROFILE, MEMORY_DIR / "playbooks"):
+for d in (WORKSPACE, INBOX, OUTBOX, DOWNLOADS, STATE_DIR, BROWSER_PROFILE, MEMORY_DIR / "playbooks"):
     d.mkdir(parents=True, exist_ok=True)
 
 # First run: seed memory/ from the templates (memory/ is personal and never committed).

@@ -59,7 +59,7 @@ To change the brain, name or Telegram later, double-click **`Configure Steward.c
 | **Local (Ollama)** | Trying it out, privacy, simple tasks | Free | Nothing leaves your Mac | The wizard picks a model for your RAM: 8 GB → `gemma4:e4b`, 16 GB → `gemma4:12b`, 40 GB+ → `gemma4:26b`. Slower and less reliable on long multi-step tasks. |
 | **Claude (Anthropic API)** | Complex, multi-step tasks across websites | Pay per use | Requests go to Anthropic | Get a key at [console.anthropic.com](https://console.anthropic.com) and set a monthly spend limit. Per-task cap: `MAX_BUDGET_USD`. |
 | **Ollama Cloud** | Big open models without the RAM | Ollama plan | Requests go to Ollama | Key at [ollama.com/settings/keys](https://ollama.com/settings/keys). |
-| **Custom** | Your own gateway or proxy | Varies | Varies | Any endpoint that speaks the Anthropic Messages API (`BRAIN_BASE_URL`, `BRAIN_API_KEY`, `BRAIN_MODEL`). |
+| **Custom** | Your own gateway, or OpenRouter | Varies | Varies | Any endpoint that speaks the Anthropic Messages API (`BRAIN_BASE_URL`, `BRAIN_API_KEY`, `BRAIN_MODEL`), e.g. OpenRouter at `https://openrouter.ai/api`. Set `BRAIN_CONTEXT_TOKENS` to the model's context size. Free tiers allow only a few dozen requests a day, and one browser task can use 20–30. |
 
 All four use the same agent loop, tools and safety rules (built on the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview)). Ollama provides an [Anthropic-compatible API](https://docs.ollama.com/integrations/claude-code), which is why local models work too.
 
@@ -132,6 +132,8 @@ Add servers to `integrations.json`; examples for GitHub and a filesystem folder 
 - **Your own rules:** `rules.json` adds allow, ask or block rules, for example `"block": ["Bash(*git push --force*)"]`. Built-in blocks can't be overridden.
 - **Prompt-injection aware:** text on web pages and in emails is treated as information, never as instructions.
 - **Locked down:** the desktop app listens on `127.0.0.1` only, needs a secret sign-in link (the app handles it), and refuses other websites. Telegram answers only your user ID.
+- **Every action is checked:** the rules run as a hook on every action the agent takes, including "read-only" ones the engine would otherwise allow on its own.
+- **Stuck-loop guard:** if the agent repeats the same action 3 times, the next attempt is refused and it's told to change approach or report back.
 - **Limits:** approvals time out after 10 minutes (counted as denied), and each task has a step limit and, for the Anthropic API, a spend cap.
 
 > Steward can do anything you can do on your Mac. Read approval cards before tapping Approve, and start with small tasks.
@@ -186,6 +188,7 @@ scheduler.py (tasks, watchlist) ────────────────
 
 | Problem | Fix |
 |---|---|
+| "This task is too big for the local model's memory" | Long browser tasks can outgrow a local model's context. Steward now summarises older steps and retries automatically. If it still fails, split the task, raise `OLLAMA_CONTEXT_LENGTH` (uses more RAM), or use a larger brain. |
 | First reply is slow | Normal for local models while the model warms up (about 1 minute after start). Smaller model: `Configure Steward.command`. For complex tasks, use Claude. |
 | "Reconnecting…" in the app | Steward isn't running. Double-click `Start Steward.command`, and check `~/.steward/stderr.log`. |
 | Screenshots are blank, or clicks don't work | System Settings → Privacy & Security → allow **Screen Recording** and **Accessibility** for `.venv/bin/python` (and Terminal). |
