@@ -68,8 +68,9 @@ async def serve():
     from scheduler import Scheduler
     from telegram import BotCommand
 
+    import models
     router = Router()
-    brain = Brain(router)
+    brain = Brain(router, models.Registry())
     scheduler = Scheduler(brain)
     brain.scheduler = scheduler
     router.web = webserver.WebUI(router, brain, scheduler)
@@ -110,6 +111,7 @@ async def serve():
         await tg_app.stop()
         await tg_app.shutdown()
     await brain.close()
+    await router.web.bridge.close()
 
 
 if __name__ == "__main__":
@@ -117,19 +119,17 @@ if __name__ == "__main__":
         import webserver
         print(webserver.app_url())
         sys.exit(0)
-    if config.BRAIN_PROVIDER == "anthropic" and not config.ANTHROPIC_API_KEY:
-        sys.exit("Set ANTHROPIC_API_KEY in .env, or run Configure Steward.command to pick another brain.")
-    if config.BRAIN_PROVIDER in ("ollama-cloud", "custom") and not (config.BRAIN_API_KEY and config.BRAIN_MODEL):
-        sys.exit("Set BRAIN_API_KEY and BRAIN_MODEL in .env, or run Configure Steward.command.")
-    if config.BRAIN_PROVIDER == "custom" and not config.BRAIN_BASE_URL:
-        sys.exit("Set BRAIN_BASE_URL in .env for the custom brain.")
-    if config.BRAIN_PROVIDER == "ollama":
+    setup_logging()
+    import models
+    _m = models.Registry().active_model()
+    if models.is_local(_m):
         import urllib.request
         try:
             urllib.request.urlopen(f"{config.OLLAMA_URL}/api/tags", timeout=5)
         except Exception:
-            sys.exit(f"Ollama isn't reachable at {config.OLLAMA_URL}. Start it with: ollama serve")
-    setup_logging()
+            # Start anyway: the app stays reachable, and you can switch to another model there.
+            logging.warning("Ollama isn't reachable at %s. Start the Ollama app, or pick another "
+                            "model in Manage models.", config.OLLAMA_URL)
     if "--cli" in sys.argv:
         asyncio.run(run_cli())
     else:

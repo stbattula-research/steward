@@ -3,3 +3,4 @@ python-telegram-bot>=22.0
 python-dotenv>=1.0
 apscheduler>=3.10,<4
 aiohttp>=3.9
+litellm>=1.100,<2

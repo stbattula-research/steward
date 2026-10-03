@@ -65,6 +65,19 @@ All four use the same agent loop, tools and safety rules (built on the [Claude A
 
 ---
 
+## Use any model, switch any time
+
+Add as many models as you like, then choose one for each chat from the **model picker in the chat box**. Open **Models** in the sidebar (or "Add or manage models…" in the picker) to add, test or remove them. You can also mark one model as the one for **scheduled tasks and heads-ups**, for example a free local model for background checks and a stronger hosted model for hands-on work. From your phone, `/model` lists them and `/model 2` switches.
+
+| Works directly (Claude format) | Translated automatically (OpenAI format) |
+|---|---|
+| Ollama on this Mac, Claude (Anthropic), OpenRouter, DeepSeek, Ollama Cloud, or any other Claude-format endpoint | Google Gemini, OpenAI, Groq, Mistral, NVIDIA NIM, or any other OpenAI-format endpoint |
+
+- **Keys stay safe.** API keys are stored in the **macOS Keychain**. The agent never sees them: its requests go through a small local bridge that adds the key, and translates OpenAI-format providers using [LiteLLM](https://github.com/BerriAI/litellm).
+- **Test before you chat.** **Test connection** sends a tiny request, so a wrong key or model ID shows up straight away.
+- **Switching models starts a fresh conversation.** Your memory, playbooks and scheduled tasks are shared by all models.
+- **Free tiers have limits.** Agent tasks use many requests (a browser task can use 20–30), so free tiers run out quickly. Some free tiers, like Gemini's, may also use your data to improve the provider's products.
+
 ## Using it
 
 ### Desktop app

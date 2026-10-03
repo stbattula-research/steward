@@ -11,6 +11,7 @@ export function useAgent() {
   const [memory, setMemory] = useState({ files: [], dir: '' });
   const [prefs, setPrefs] = useState({ phone_mode: 'auto' });
   const [toast, setToast] = useState(null);
+  const [models, setModels] = useState({ items: [], active: '', background: '', providers: {} });
   const ws = useRef(null);
   const retry = useRef(0);
   const alive = useRef(true);
@@ -34,6 +35,12 @@ export function useAgent() {
         case 'memory': setMemory({ files: ev.files, dir: ev.dir }); break;
         case 'prefs': setPrefs(ev.prefs); break;
         case 'toast': setToast({ ...ev, key: Date.now() }); break;
+        case 'models': setModels(ev); break;
+        case 'hello_update': setInfo((i) => ({ ...i, ...ev })); break;
+        case 'model_test_result':
+        case 'ollama_tags':
+        case 'model_saved':
+          window.dispatchEvent(new CustomEvent('agent-' + ev.type, { detail: ev })); break;
         case 'history': setEvents(ev.events); break;
         case 'status':
           setStatus({ busy: ev.busy, label: ev.label });
@@ -66,7 +73,7 @@ export function useAgent() {
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(msg));
   }, []);
 
-  return { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, send };
+  return { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send };
 }
 
 export async function uploadFile(file) {

@@ -11,8 +11,10 @@ from claude_agent_sdk import (
     PermissionResultDeny, ResultMessage, TextBlock, ToolUseBlock, create_sdk_mcp_server, tool,
 )
 
+import bridge
 import config
 import guardrails
+import models
 from tools import Channel, Secrets, build_server
 
 log = logging.getLogger("brain")
@@ -90,8 +92,9 @@ class BufferChannel:
 
 
 class Brain:
-    def __init__(self, channel: Channel):
+    def __init__(self, channel: Channel, registry: "models.Registry | None" = None):
         self.channel = channel
+        self.registry = registry or models.Registry()
         self.client: ClaudeSDKClient | None = None
         self.lock = asyncio.Lock()            # one model run at a time (one local model in RAM)
         self.busy = False
@@ -103,37 +106,29 @@ class Brain:
         self.recent_reports: list[str] = []   # automated results to show the chat session
 
     # --------------------------------------------------------------- config --
-    def _brain_env(self) -> tuple[str | None, dict, float | None]:
-        """(model, env, budget) for the chosen provider."""
-        quiet = {   # no telemetry / helper traffic; helper calls use the same model
+    def _brain_env(self, m: dict) -> tuple[str | None, dict, float | None]:
+        """(model, env, budget) for one model from the registry."""
+        env = {   # no telemetry / helper traffic; helper calls use the same model
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
             "DISABLE_TELEMETRY": "1",
+            "ANTHROPIC_API_KEY": "",
+            "CLAUDE_CODE_OAUTH_TOKEN": "",     # never use (or forward) a Claude Code login from this Mac
+            **_context_env(models.context_window(m)),
         }
-        if config.BRAIN_PROVIDER in ("ollama-cloud", "custom"):
-            base = config.BRAIN_BASE_URL or ("https://ollama.com" if config.BRAIN_PROVIDER == "ollama-cloud" else "")
-            return config.BRAIN_MODEL, {
-                **quiet,
-                "ANTHROPIC_BASE_URL": base,
-                "ANTHROPIC_AUTH_TOKEN": config.BRAIN_API_KEY,
-                "ANTHROPIC_API_KEY": "",
-                "ANTHROPIC_SMALL_FAST_MODEL": config.BRAIN_MODEL,
-                "ANTHROPIC_DEFAULT_HAIKU_MODEL": config.BRAIN_MODEL,
-                **_context_env(config.BRAIN_CONTEXT_TOKENS),
-            }, None
-        if config.BRAIN_PROVIDER == "ollama":
-            # Ollama speaks the Anthropic Messages API, so the same agent loop runs on local models.
-            return config.OLLAMA_MODEL, {
-                "ANTHROPIC_BASE_URL": config.OLLAMA_URL,
-                "ANTHROPIC_AUTH_TOKEN": "ollama",
-                "ANTHROPIC_API_KEY": "",
-                # Background helper calls (titles, summaries) use the same local model.
-                "ANTHROPIC_SMALL_FAST_MODEL": config.OLLAMA_MODEL,
-                "ANTHROPIC_DEFAULT_HAIKU_MODEL": config.OLLAMA_MODEL,
-                **quiet,
-                **_context_env(config.OLLAMA_CONTEXT),
-            }, None   # local = no $ cost, so no budget cap
-        return config.CLAUDE_MODEL, {"ANTHROPIC_API_KEY": config.ANTHROPIC_API_KEY}, config.MAX_BUDGET_USD
+        p = models.provider_of(m)
+        if not p.get("key"):
+            # Local Ollama: no key, talk to it directly.
+            env.update({"ANTHROPIC_BASE_URL": models.base_url(m), "ANTHROPIC_AUTH_TOKEN": "ollama"})
+        else:
+            # Everything with a key goes through the local bridge, which adds the real key
+            # (and translates OpenAI-format providers). Keys never enter this environment.
+            env.update({"ANTHROPIC_BASE_URL": bridge.url_for(m["id"]), "ANTHROPIC_AUTH_TOKEN": "steward-bridge"})
+        model = m.get("model") or None
+        if model:
+            env.update({"ANTHROPIC_SMALL_FAST_MODEL": model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": model})
+        budget = config.MAX_BUDGET_USD if m["provider"] == "anthropic" else None
+        return model, env, budget
 
     def _sched_server(self):
         brain = self
@@ -168,9 +163,14 @@ class Brain:
 
         return create_sdk_mcp_server("sched", tools=[schedule_task, list_scheduled_tasks, cancel_scheduled_task])
 
-    def _options(self, resume: str | None, channel: Channel, mode: str = "chat") -> ClaudeAgentOptions:
-        model, env, budget = self._brain_env()
-        local = config.BRAIN_PROVIDER == "ollama"
+    def _model_for(self, mode: str) -> dict:
+        return self.registry.background_model() if mode in ("task", "watch") else self.registry.active_model()
+
+    def _options(self, resume: str | None, channel: Channel, mode: str = "chat",
+                 m: dict | None = None) -> ClaudeAgentOptions:
+        m = m or self._model_for(mode)
+        model, env, budget = self._brain_env(m)
+        local = models.is_local(m)
         decide = self._decider(channel, mode)
         browser_args = ["-y", "@playwright/mcp@latest", "--browser", config.BROWSER_CHANNEL,
                         "--user-data-dir", str(config.BROWSER_PROFILE),
@@ -229,6 +229,15 @@ class Brain:
         self.client = ClaudeSDKClient(self._options(None, self.channel))
         await self.client.connect()
 
+    async def switch_model(self, model_id: str) -> dict:
+        """Chat with a different model from now on (starts a fresh conversation)."""
+        await self.stop_current()
+        async with self.lock:
+            m = self.registry.set_active(model_id)
+            await self.reset()
+        asyncio.ensure_future(self.warm_up())
+        return m
+
     async def stop_current(self) -> None:
         if self.active and self.busy:
             self.interrupted = True
@@ -237,7 +246,7 @@ class Brain:
     async def warm_up(self) -> None:
         """Local models: process the (large, fixed) instructions + tool list once at startup,
         so Ollama has them cached and your first real message starts fast."""
-        if config.BRAIN_PROVIDER != "ollama":
+        if not models.is_local(self.registry.active_model()):
             return
         async with self.lock:
             self.busy = True

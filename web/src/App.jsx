@@ -8,6 +8,7 @@ import DOMPurify from 'dompurify';
 import { transcribe, uploadFile, useAgent } from './useAgent.js';
 import { Icon } from './icons.jsx';
 import MemoryPanel from './MemoryPanel.jsx';
+import ModelsPanel, { ModelPicker } from './ModelsPanel.jsx';
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -207,7 +208,7 @@ function EmptyState({ info, onPick }) {
   );
 }
 
-function Composer({ busy, connected, onSend, onStop }) {
+function Composer({ busy, connected, onSend, onStop, models, send, onManageModels }) {
   const theme = useTheme();
   const [text, setText] = useState('');
   const [files, setFiles] = useState([]);       // {name, path} | {name, uploading:true}
@@ -318,6 +319,7 @@ function Composer({ busy, connected, onSend, onStop }) {
               <button className={`icon-btn ${voice === 'recording' ? 'live' : ''}`} title={voice === 'recording' ? 'Stop recording' : 'Voice'} onClick={toggleMic} disabled={voice === 'transcribing'}>
                 <Icon name={voice === 'recording' ? 'stop' : 'mic'} />
               </button>
+              {models.items.length > 0 && <ModelPicker models={models} busy={busy} send={send} onManage={onManageModels} />}
             </div>
             <div className="right">
               {busy && <button className="btn ghost sm" onClick={onStop}><Icon name="stop" size={12} /> Stop</button>}
@@ -381,7 +383,7 @@ function PhoneSwitch({ prefs, send }) {
   );
 }
 
-function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, onMemory, memoryCount }) {
+function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, onMemory, memoryCount, onModels, modelCount }) {
   const theme = useTheme();
   const [confirm, setConfirm] = useState(null);
   const hour = new Date().getHours();
@@ -413,6 +415,12 @@ function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, o
           <Icon name="book" />
           <span>Memory &amp; playbooks</span>
           <span className="count">{memoryCount}</span>
+          <Icon name="chevron" size={14} />
+        </button>
+        <button className="memory-btn" onClick={onModels}>
+          <Icon name="cpu" />
+          <span>Models</span>
+          <span className="count">{modelCount}</span>
           <Icon name="chevron" size={14} />
         </button>
       </div>
@@ -459,7 +467,8 @@ function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, o
 /* -------------------------------------------------------------------- app -- */
 
 export default function App() {
-  const { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, send } = useAgent();
+  const { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send } = useAgent();
+  const [modelsOpen, setModelsOpen] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
   const [memOpen, setMemOpen] = useState(false);
   const theme = useResolvedTheme(prefs.theme);
@@ -504,7 +513,9 @@ export default function App() {
       <Sidebar info={info} status={status} tasks={tasks} connected={connected} send={send} open={sideOpen}
         onClose={() => setSideOpen(false)} prefs={prefs}
         onMemory={() => { setMemOpen(true); setSideOpen(false); send({ type: 'memory_get' }); }}
-        memoryCount={memory.files.length} />
+        memoryCount={memory.files.length}
+        onModels={() => { setModelsOpen(true); setSideOpen(false); }} modelCount={models.items.length} />
+      {modelsOpen && <ModelsPanel models={models} send={send} onClose={() => setModelsOpen(false)} />}
       {memOpen && <MemoryPanel memory={memory} send={send} onClose={() => setMemOpen(false)} />}
       {toast && <div key={toast.key} className={`toast ${toast.error ? 'err' : ''}`} role="status">{toast.text}</div>}
       {sideOpen && <div className="scrim" onClick={() => setSideOpen(false)} />}
@@ -547,7 +558,8 @@ export default function App() {
           </div>
         </div>
 
-        <Composer busy={status.busy} connected={connected} onSend={sendText} onStop={() => send({ type: 'stop' })} />
+        <Composer busy={status.busy} connected={connected} onSend={sendText} onStop={() => send({ type: 'stop' })}
+          models={models} send={send} onManageModels={() => setModelsOpen(true)} />
       </main>
     </div>
     </ThemeCtx.Provider>

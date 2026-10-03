@@ -16,8 +16,15 @@ from datetime import datetime
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
+import aiohttp
 
+
+def aiohttp_client():
+    return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5))
+
+import bridge
 import config
+import models
 import voice
 
 log = logging.getLogger("web")
@@ -218,12 +225,13 @@ class WebUI:
         self.clients.add(ws)
         self.last_active = time.time()
         await ws.send_json({"type": "hello", "agent": config.AGENT_NAME, "avatar": config.AGENT_AVATAR,
-                            "model": config.model_label(),
+                            "model": self.brain.registry.active_model()["label"],
                             "telegram": bool(self.router.telegram), "prefs": self.prefs})
         await ws.send_json({"type": "history", "events": list(self.history)})
         await ws.send_json(self.status)
         await ws.send_json({"type": "tasks", "items": self.scheduler.as_list()})
         await self.push_memory(ws)
+        await ws.send_json({"type": "models", **self.brain.registry.public()})
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
@@ -275,8 +283,67 @@ class WebUI:
             await self.delete_playbook(m.get("name", ""))
         elif kind == "set_pref":
             await self.set_pref(m.get("key"), m.get("value"))
+        elif kind.startswith("model") or kind == "ollama_tags":
+            await self._on_models(m)
         elif kind == "presence":
             pass   # last_active already updated
+
+    # ------------------------------------------------------------ models -----
+    async def push_models(self) -> None:
+        await self._broadcast({"type": "models", **self.brain.registry.public()})
+        await self._broadcast({"type": "hello_update", "model": self.brain.registry.active_model()["label"]})
+
+    async def _on_models(self, m: dict) -> None:
+        reg = self.brain.registry
+        kind = m.get("type")
+        try:
+            if kind == "models_get":
+                await self.push_models()
+            elif kind == "model_select":
+                if self.brain.busy:
+                    raise ValueError("Wait for the current task to finish (or press Stop) before switching.")
+                chosen = await self.brain.switch_model(m.get("id", ""))
+                await self.emit({"type": "divider", "text": f"New conversation · {chosen['label']}"})
+                await self.push_models()
+            elif kind == "model_save":
+                saved = reg.save_model(m.get("model") or {})
+                if m.get("background"):
+                    reg.set_background(saved["id"])
+                await self.push_models()
+                await self._broadcast({"type": "toast", "text": f"Saved {saved['label']}"})
+                await self._broadcast({"type": "model_saved", "id": saved["id"]})
+            elif kind == "model_delete":
+                was_active = reg.active == m.get("id")
+                reg.delete(m.get("id", ""))
+                if was_active:
+                    await self.brain.switch_model(reg.active)
+                await self.push_models()
+                await self._broadcast({"type": "toast", "text": "Model removed"})
+            elif kind == "model_background":
+                reg.set_background(m.get("id", ""))
+                await self.push_models()
+            elif kind == "model_test":
+                draft = m.get("model") or {}
+                saved = reg.get(draft.get("id", "")) or {}
+                test = {**saved, **{k: v for k, v in draft.items() if k != "api_key"}}
+                test.setdefault("id", "draft")
+                key = (draft.get("api_key") or "").strip() or None
+                ok, msg = await bridge.test_model(test, key)
+                await self._broadcast({"type": "model_test_result", "ok": ok, "text": msg})
+            elif kind == "ollama_tags":
+                names = []
+                try:
+                    async with aiohttp_client() as s:
+                        r = await s.get(f"{config.OLLAMA_URL}/api/tags")
+                        names = [x["name"] for x in (await r.json()).get("models", [])]
+                except Exception:
+                    pass
+                await self._broadcast({"type": "ollama_tags", "names": names})
+        except ValueError as e:
+            await self._broadcast({"type": "toast", "text": str(e), "error": True})
+        except Exception as e:
+            log.exception("model action failed")
+            await self._broadcast({"type": "toast", "text": f"Something went wrong: {str(e)[:200]}", "error": True})
 
     async def upload(self, request: web.Request):
         if not self._authed(request):
@@ -317,6 +384,8 @@ class WebUI:
         app.router.add_post("/upload", self.upload)
         app.router.add_post("/voice", self.voice_note)
         app.router.add_get("/files/{fid}", self.file)
+        self.bridge = bridge.Bridge(self.brain.registry)
+        self.bridge.routes(app)
         if (STATIC / "assets").exists():
             app.router.add_static("/assets", STATIC / "assets")
         for extra in ("favicon.svg", "manifest.webmanifest"):

@@ -145,6 +145,7 @@ def build(router, brain, scheduler):
         ("cancel", "Cancel a scheduled task: /cancel <id>"),
         ("watch", "Run the watchlist check now"),
         ("memory", "Show what I know about you"),
+        ("model", "Show or switch the AI model: /model 2"),
     ]
 
     async def cmd_start(update: Update, ctx):
@@ -165,6 +166,29 @@ def build(router, brain, scheduler):
     async def cmd_watch(update: Update, ctx):
         await update.message.reply_text("👀 Checking your watchlist…")
         await scheduler._heartbeat_now()
+
+    async def cmd_model(update: Update, ctx):
+        reg = brain.registry
+        if ctx.args:
+            try:
+                chosen = reg.models[int(ctx.args[0]) - 1]
+            except (ValueError, IndexError):
+                await update.message.reply_text("Use a number from /model.")
+                return
+            if brain.busy:
+                await update.message.reply_text("I'm in the middle of a task. Send /stop first, then switch.")
+                return
+            m = await brain.switch_model(chosen["id"])
+            await router.web.push_models() if router.web else None
+            await update.message.reply_text(f"Switched to {m['label']}. Starting a fresh conversation.")
+            return
+        lines = []
+        for i, m in enumerate(reg.models, 1):
+            mark = "✅" if m["id"] == reg.active else "▫️"
+            extra = " (scheduled tasks)" if m["id"] == reg.background else ""
+            lines.append(f"{mark} {i}. {m['label']}{extra}")
+        await update.message.reply_text("Models:\n" + "\n".join(lines) +
+                                        "\n\nSwitch with /model <number>. Add more in the desktop app → Manage models.")
 
     async def cmd_memory(update: Update, ctx):
         parts = []
@@ -206,6 +230,7 @@ def build(router, brain, scheduler):
     app.add_handler(CommandHandler("cancel", cmd_cancel, filters=owner))
     app.add_handler(CommandHandler("watch", cmd_watch, filters=owner))
     app.add_handler(CommandHandler("memory", cmd_memory, filters=owner))
+    app.add_handler(CommandHandler("model", cmd_model, filters=owner))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^appr:"))
     app.add_handler(MessageHandler(
         owner & ~filters.COMMAND & (filters.TEXT | filters.PHOTO | filters.Document.ALL | filters.VOICE | filters.AUDIO), on_message))
