@@ -48,7 +48,7 @@ class WebUI:
         self.files: dict[str, Path] = {}
         self.status = {"type": "status", "busy": False, "label": ""}
         self.last_active = 0.0
-        self.prefs = {"phone_mode": "auto"}     # auto | always | off
+        self.prefs = {"phone_mode": "auto", "theme": "auto"}   # phone: auto|always|off · theme: auto|light|dark
         try:
             if config.PREFS_FILE.exists():
                 self.prefs.update(json.loads(config.PREFS_FILE.read_text()))
@@ -182,7 +182,8 @@ class WebUI:
         await self._broadcast({"type": "toast", "text": f"Removed {name}"})
 
     async def set_pref(self, key: str, value) -> None:
-        if key == "phone_mode" and value in ("auto", "always", "off"):
+        allowed = {"phone_mode": ("auto", "always", "off"), "theme": ("auto", "light", "dark")}
+        if value in allowed.get(key, ()):
             self.prefs[key] = value
             config.PREFS_FILE.write_text(json.dumps(self.prefs))
             await self._broadcast({"type": "prefs", "prefs": self.prefs})

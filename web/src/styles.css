@@ -19,8 +19,9 @@
   --mono: ui-monospace, 'SF Mono', Menlo, monospace;
   color-scheme: dark;
 }
+/* Light theme: used when Appearance is "Light", or "Auto" and the Mac is in light mode. */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme="dark"]) {
     --bg: #f7f7f5;
     --surface: #ffffff;
     --surface-2: #f2f2f0;
@@ -36,6 +37,22 @@
     --danger: #d23c3c;
     color-scheme: light;
   }
+}
+:root[data-theme="light"] {
+  --bg: #f7f7f5;
+  --surface: #ffffff;
+  --surface-2: #f2f2f0;
+  --raised: #ececea;
+  --line: rgba(0, 0, 0, 0.08);
+  --line-strong: rgba(0, 0, 0, 0.14);
+  --text: #161616;
+  --muted: #6b6b6b;
+  --faint: #a3a3a3;
+  --accent: #2f6fd6;
+  --ok: #1f9d5c;
+  --warn: #c46a00;
+  --danger: #d23c3c;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -138,7 +155,7 @@ button:disabled { cursor: default; opacity: 0.4; }
 }
 .task-x:hover { background: var(--raised); color: var(--text); }
 .task-x.confirm { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
-.side-foot { display: flex; flex-direction: column; gap: 12px; font-size: 12px; color: var(--muted); }
+.side-foot { display: flex; flex-direction: column; gap: 14px; font-size: 12px; color: var(--muted); }
 .tg-line { display: flex; align-items: center; gap: 8px; }
 .phone-switch { display: flex; flex-direction: column; gap: 8px; }
 .phone-label { display: flex; align-items: center; gap: 6px; }
@@ -364,3 +381,9 @@ kbd { font: 10px var(--mono); opacity: .6; margin-left: 2px; }
   .thread { scroll-behavior: auto; }
   .sidebar { transition: none; }
 }
+
+/* settings rows in the sidebar footer (appearance, phone alerts) */
+.setting { display: flex; flex-direction: column; gap: 8px; }
+.setting-label { display: flex; align-items: center; gap: 6px; }
+.seg button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+body { transition: background-color .2s ease, color .2s ease; }

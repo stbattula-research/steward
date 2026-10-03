@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { BorderBeam } from 'border-beam';
 import { BotAvatar } from 'bot-avatars';
 import { ThinkingOrb } from 'thinking-orbs';
@@ -10,6 +10,31 @@ import { Icon } from './icons.jsx';
 import MemoryPanel from './MemoryPanel.jsx';
 
 marked.setOptions({ breaks: true, gfm: true });
+
+/* ------------------------------------------------------------------ theme -- */
+// Appearance: 'auto' follows the Mac; 'light' / 'dark' pin it. The resolved value is
+// passed to the libraries.dev components so their glows match the page.
+const ThemeCtx = createContext('dark');
+const useTheme = () => useContext(ThemeCtx);
+
+function useResolvedTheme(pref) {
+  const mq = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: light)');
+  const [system, setSystem] = useState(mq && mq.matches ? 'light' : 'dark');
+  useEffect(() => {
+    if (!mq) return;
+    const on = (e) => setSystem(e.matches ? 'light' : 'dark');
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
+  const resolved = pref === 'light' || pref === 'dark' ? pref : system;
+  useEffect(() => {
+    const root = document.documentElement;
+    if (pref === 'light' || pref === 'dark') root.dataset.theme = pref; else delete root.dataset.theme;
+    try { localStorage.setItem('steward-theme', pref || 'auto'); } catch { /* storage unavailable */ }
+    document.querySelector('meta[name=theme-color]')?.setAttribute('content', resolved === 'light' ? '#f7f7f5' : '#121212');
+  }, [pref, resolved]);
+  return resolved;
+}
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A') { node.setAttribute('target', '_blank'); node.setAttribute('rel', 'noreferrer'); }
 });
@@ -96,11 +121,12 @@ function Steps({ items, live }) {
 }
 
 function Approval({ ev, onAnswer }) {
+  const theme = useTheme();
   const pending = ev.approved === undefined;
   const [title, ...rest] = (ev.summary || '').split('\n');
   return (
     <div className="approval-wrap">
-      <BorderBeam size="pulse-outside" colorVariant="sunset" theme="auto" active={pending} strength={0.9}>
+      <BorderBeam size="pulse-outside" colorVariant="sunset" theme={theme} active={pending} strength={0.9}>
         <div className={`approval ${pending ? '' : 'done'}`}>
           <div className="approval-head">
             <Icon name="shield" size={16} />
@@ -162,6 +188,7 @@ function Message({ ev }) {
 }
 
 function EmptyState({ info, onPick }) {
+  const theme = useTheme();
   const ideas = [
     "What's using the most space on my Mac?",
     'Take a screenshot and tell me what apps are open',
@@ -170,7 +197,7 @@ function EmptyState({ info, onPick }) {
   ];
   return (
     <div className="empty">
-      <BotAvatar type={info.avatar} state="default" face="mouth" size={112} theme="auto" />
+      <BotAvatar type={info.avatar} state="default" face="mouth" size={112} theme={theme} />
       <h1>What can I do for you?</h1>
       <p className="muted">I'm running on your Mac. Ask me to do something, or try one of these.</p>
       <div className="ideas">
@@ -181,6 +208,7 @@ function EmptyState({ info, onPick }) {
 }
 
 function Composer({ busy, connected, onSend, onStop }) {
+  const theme = useTheme();
   const [text, setText] = useState('');
   const [files, setFiles] = useState([]);       // {name, path} | {name, uploading:true}
   const [voice, setVoice] = useState('idle');   // idle | recording | transcribing
@@ -261,13 +289,13 @@ function Composer({ busy, connected, onSend, onStop }) {
       onDrop={(e) => { e.preventDefault(); addFiles([...e.dataTransfer.files]); }}
     >
       {error && <div className="composer-error">{error}</div>}
-      <VoiceBeam stream={stream} processing={voice === 'transcribing'} active={voice !== 'idle'} idle={0} theme="auto" colorVariant="colorful">
+      <VoiceBeam stream={stream} processing={voice === 'transcribing'} active={voice !== 'idle'} idle={0} theme={theme} colorVariant="colorful">
         <div className="composer">
           {files.length > 0 && (
             <div className="attachments">
               {files.map((f) => (
                 <span key={f.name} className={`att ${f.uploading ? 'loading' : ''}`}>
-                  {f.uploading ? <ThinkingOrb state="working" size={20} theme="auto" /> : <Icon name="file" size={14} />}
+                  {f.uploading ? <ThinkingOrb state="working" size={20} theme={theme} /> : <Icon name="file" size={14} />}
                   {f.name}
                   {!f.uploading && <button aria-label={`Remove ${f.name}`} onClick={() => setFiles(files.filter((x) => x !== f))}><Icon name="x" size={12} /></button>}
                 </span>
@@ -303,6 +331,34 @@ function Composer({ busy, connected, onSend, onStop }) {
   );
 }
 
+function Segmented({ label, icon, value, options, onChange }) {
+  return (
+    <div className="setting">
+      <div className="setting-label"><Icon name={icon} size={14} />{label}</div>
+      <div className="seg" role="radiogroup" aria-label={label}>
+        {options.map((o) => (
+          <button key={o.id} role="radio" aria-checked={value === o.id} title={o.tip}
+            className={value === o.id ? 'on' : ''} onClick={() => onChange(o.id)}>
+            {o.icon && <Icon name={o.icon} size={13} />}{o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AppearanceSwitch({ prefs, send }) {
+  return (
+    <Segmented label="Appearance" icon="contrast" value={prefs.theme || 'auto'}
+      onChange={(v) => send({ type: 'set_pref', key: 'theme', value: v })}
+      options={[
+        { id: 'auto', label: 'Auto', icon: 'auto', tip: 'Follow your Mac (System Settings → Appearance)' },
+        { id: 'light', label: 'Light', icon: 'sun', tip: 'Always light' },
+        { id: 'dark', label: 'Dark', icon: 'moon', tip: 'Always dark' },
+      ]} />
+  );
+}
+
 function PhoneSwitch({ prefs, send }) {
   const modes = [
     { id: 'auto', label: 'Auto', tip: 'Phone gets heads-ups when you have been away from this app for 10 minutes' },
@@ -310,8 +366,8 @@ function PhoneSwitch({ prefs, send }) {
     { id: 'off', label: 'Off', tip: 'Only replies to messages you send from your phone' },
   ];
   return (
-    <div className="phone-switch">
-      <div className="phone-label"><Icon name="phone" size={14} />Phone alerts</div>
+    <div className="setting">
+      <div className="setting-label"><Icon name="phone" size={14} />Phone alerts</div>
       <div className="seg" role="radiogroup" aria-label="Phone alerts">
         {modes.map((m) => (
           <button key={m.id} role="radio" aria-checked={prefs.phone_mode === m.id} title={m.tip}
@@ -326,15 +382,16 @@ function PhoneSwitch({ prefs, send }) {
 }
 
 function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, onMemory, memoryCount }) {
+  const theme = useTheme();
   const [confirm, setConfirm] = useState(null);
   const hour = new Date().getHours();
   const avatarState = status.busy ? 'working' : hour >= 23 || hour < 6 ? 'sleeping' : 'default';
   return (
     <aside className={`sidebar ${open ? 'open' : ''}`}>
       <button className="icon-btn close-side" onClick={onClose} aria-label="Close"><Icon name="x" /></button>
-      <BorderBeam size="md" colorVariant="ocean" theme="auto" active={status.busy} strength={0.85}>
+      <BorderBeam size="md" colorVariant="ocean" theme={theme} active={status.busy} strength={0.85}>
         <div className="agent-card">
-          <BotAvatar type={info.avatar} state={avatarState} face="mouth" size={84} theme="auto" />
+          <BotAvatar type={info.avatar} state={avatarState} face="mouth" size={84} theme={theme} />
           <div className="agent-name">{info.agent}</div>
           <div className="agent-status">
             <span className={`dot ${!connected ? 'off' : status.busy ? 'busy' : 'on'}`} />
@@ -388,6 +445,7 @@ function Sidebar({ info, status, tasks, connected, send, open, onClose, prefs, o
       </div>
 
       <div className="side-foot">
+        <AppearanceSwitch prefs={prefs} send={send} />
         {info.telegram && <PhoneSwitch prefs={prefs} send={send} />}
         <div className="tg-line">
           <span className={`dot ${info.telegram ? 'on' : 'off'}`} />
@@ -404,6 +462,7 @@ export default function App() {
   const { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, send } = useAgent();
   const [sideOpen, setSideOpen] = useState(false);
   const [memOpen, setMemOpen] = useState(false);
+  const theme = useResolvedTheme(prefs.theme);
 
   useEffect(() => {
     if (!toast) return;
@@ -440,6 +499,7 @@ export default function App() {
   }
 
   return (
+    <ThemeCtx.Provider value={theme}>
     <div className="app">
       <Sidebar info={info} status={status} tasks={tasks} connected={connected} send={send} open={sideOpen}
         onClose={() => setSideOpen(false)} prefs={prefs}
@@ -452,7 +512,7 @@ export default function App() {
         <header className="topbar">
           <button className="icon-btn menu" onClick={() => setSideOpen(true)} aria-label="Open sidebar"><Icon name="menu" /></button>
           <div className="topbar-title">
-            <BotAvatar type={info.avatar} state={status.busy ? 'working' : 'default'} size={26} theme="auto" />
+            <BotAvatar type={info.avatar} state={status.busy ? 'working' : 'default'} size={26} theme={theme} />
             <span>{info.agent}</span>
           </div>
           {!connected && <span className="chip warn">Reconnecting…</span>}
@@ -477,7 +537,7 @@ export default function App() {
             )}
             {status.busy && (
               <div className="activity" aria-live="polite">
-                <ThinkingOrb state={orbFor(lastTool)} size={64} theme="auto" />
+                <ThinkingOrb state={orbFor(lastTool)} size={64} theme={theme} />
                 <div>
                   <div className="activity-label">{activityLabel(lastTool, status.label)}…</div>
                   {lastTool && <div className="activity-detail">{lastTool.summary.split('\n').slice(-1)[0].slice(0, 120)}</div>}
@@ -490,5 +550,6 @@ export default function App() {
         <Composer busy={status.busy} connected={connected} onSend={sendText} onStop={() => send({ type: 'stop' })} />
       </main>
     </div>
+    </ThemeCtx.Provider>
   );
 }

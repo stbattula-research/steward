@@ -74,7 +74,7 @@ All four use the same agent loop, tools and safety rules (built on the [Claude A
 - **Live activity:** an animated orb shows what it's doing (browsing, running a command, writing), with the exact step underneath. Finished steps fold into a "3 steps" row you can expand.
 - **Approvals:** risky actions show up as glowing cards with **Approve / Deny** buttons.
 - **Sidebar:** status, quick actions (screenshot, check watchlist, new chat, stop), scheduled tasks you can cancel, and the **Phone alerts** switch.
-- **Light and dark** mode follow your Mac. You get desktop notifications when the window is in the background.
+- **Appearance:** choose **Auto** (follows your Mac), **Light** or **Dark** at the bottom of the sidebar. You get desktop notifications when the window is in the background.
 
 ### From your phone (Telegram, optional)
 Text or voice-note your bot. Commands: `/screen` `/stop` `/new` `/status` `/tasks` `/cancel <id>` `/watch` `/memory`.
@@ -212,4 +212,4 @@ Developers: `.venv/bin/python main.py --cli` chats in the terminal (stop the ser
 
 ## License
 
-[MIT](LICENSE) © stbattula-research
+[MIT](LICENSE) © Sai Teja Battula
