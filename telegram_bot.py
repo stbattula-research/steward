@@ -23,16 +23,30 @@ class TelegramChannel:
         self.chat_id = config.TELEGRAM_OWNER_ID   # private chat id == user id
         self.pending: dict[str, asyncio.Future] = {}
 
-    async def send_text(self, text: str) -> None:
-        for i in range(0, len(text), MAX_LEN):
-            await self.app.bot.send_message(self.chat_id, text[i:i + MAX_LEN])
+    # Telegram problems (no network, or the owner hasn't tapped Start in the bot yet)
+    # must never take the agent down: log them and keep going.
+    def _warn(self, e: Exception) -> None:
+        hint = " Open your bot in Telegram and tap Start." if "chat not found" in str(e).lower() else ""
+        log.warning("Couldn't reach you on Telegram: %s.%s", e, hint)
+
+    async def send_text(self, text: str) -> bool:
+        try:
+            for i in range(0, len(text), MAX_LEN):
+                await self.app.bot.send_message(self.chat_id, text[i:i + MAX_LEN])
+            return True
+        except Exception as e:
+            self._warn(e)
+            return False
 
     async def send_file(self, path: Path, caption: str = "") -> None:
-        with open(path, "rb") as fh:
-            if path.suffix.lower() in (".png", ".jpg", ".jpeg"):
-                await self.app.bot.send_photo(self.chat_id, fh, caption=caption[:1000])
-            else:
-                await self.app.bot.send_document(self.chat_id, fh, caption=caption[:1000])
+        try:
+            with open(path, "rb") as fh:
+                if path.suffix.lower() in (".png", ".jpg", ".jpeg"):
+                    await self.app.bot.send_photo(self.chat_id, fh, caption=caption[:1000])
+                else:
+                    await self.app.bot.send_document(self.chat_id, fh, caption=caption[:1000])
+        except Exception as e:
+            self._warn(e)
 
     async def ask_approval(self, summary: str) -> bool:
         key = uuid.uuid4().hex[:10]
@@ -42,7 +56,14 @@ class TelegramChannel:
             InlineKeyboardButton("✅ Approve", callback_data=f"appr:{key}:y"),
             InlineKeyboardButton("❌ Deny", callback_data=f"appr:{key}:n"),
         ]])
-        await self.app.bot.send_message(self.chat_id, f"🔐 {summary[:3500]}", reply_markup=kb)
+        try:
+            await self.app.bot.send_message(self.chat_id, f"🔐 {summary[:3500]}", reply_markup=kb)
+        except Exception as e:
+            # Couldn't ask on the phone: let the desktop app answer, or time out as denied.
+            self._warn(e)
+            self.pending.pop(key, None)
+            await asyncio.sleep(config.APPROVAL_TIMEOUT_SEC)
+            return False
         try:
             return await asyncio.wait_for(fut, timeout=config.APPROVAL_TIMEOUT_SEC)
         except asyncio.TimeoutError:

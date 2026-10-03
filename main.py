@@ -85,11 +85,17 @@ async def serve():
     await router.web.start()
     asyncio.ensure_future(brain.warm_up())
     if tg_app:
-        await tg_app.initialize()
-        await tg_app.start()
-        await tg_app.updater.start_polling(allowed_updates=["message", "callback_query"])
-        await tg_app.bot.set_my_commands([BotCommand(c, d) for c, d in commands])
-        await router.telegram.send_text("🟢 Agent is online on your Mac.")
+        try:
+            await tg_app.initialize()
+            await tg_app.start()
+            await tg_app.updater.start_polling(allowed_updates=["message", "callback_query"])
+            await tg_app.bot.set_my_commands([BotCommand(c, d) for c, d in commands])
+            await router.telegram.send_text(f"🟢 {config.AGENT_NAME} is online on your Mac.")
+        except Exception as e:
+            # A bad token or no network shouldn't take down the desktop app.
+            logging.error("Telegram couldn't start (%s). Check the bot token with Configure Steward.command.", e)
+            router.telegram = None
+            tg_app = None
     if config.OPEN_APP_ON_START:
         subprocess.Popen(["open", webserver.app_url()])
 

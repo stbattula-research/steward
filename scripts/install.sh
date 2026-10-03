@@ -14,15 +14,13 @@ envget() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2-; }
 case "$DIR" in *"'"*|*'"'*) echo "Please move this folder to a path without quote characters."; exit 1;; esac
 
 # --------------------------------------------------- migrate older installs ---
-# Pre-release builds used a different launchd label containing "myagent".
-for OLD in $(launchctl list 2>/dev/null | awk '{print $3}' | grep -i 'myagent$'); do
+for OLD in com.saiteja.myagent; do
   if launchctl print "gui/$(id -u)/$OLD" >/dev/null 2>&1; then
     step "Stopping an older version of this agent ($OLD)"
     launchctl bootout "gui/$(id -u)/$OLD" 2>/dev/null || true
   fi
   rm -f "$HOME/Library/LaunchAgents/$OLD.plist"
 done
-rm -f "$HOME"/Library/LaunchAgents/*.myagent.plist
 if [ -d "$HOME/.my-agent" ] && [ ! -d "$STATE" ]; then
   step "Moving settings from ~/.my-agent to ~/.steward"
   mv "$HOME/.my-agent" "$STATE"
@@ -125,9 +123,22 @@ cat > "$PLIST" <<EOF
   <key>StandardErrorPath</key><string>$STATE/stderr.log</string>
 </dict></plist>
 EOF
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-sleep 1
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+plutil -lint -s "$PLIST" || { echo "   The service file is invalid: $PLIST"; exit 1; }
+DOMAIN="gui/$(id -u)"
+# Stop the running copy and wait until macOS has fully unloaded it (it can take a few seconds).
+launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+for i in $(seq 1 20); do launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || break; sleep 0.5; done
+# Start it, retrying a few times if macOS is still busy.
+started=no
+for i in 1 2 3 4 5; do
+  if launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then started=yes; break; fi
+  if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
+    launchctl kickstart -k "$DOMAIN/$LABEL" && { started=yes; break; }
+  fi
+  sleep 2
+done
+[ "$started" = yes ] || { echo "   macOS refused to start the service. Restart your Mac, then double-click Start Steward.command again."; exit 1; }
+echo "   Running."
 
 # ------------------------------------------------------------ mac app -----
 AGENT_NAME=$(envget AGENT_NAME); AGENT_NAME=${AGENT_NAME:-Steward}
