@@ -454,6 +454,22 @@ def _decode_attributed(blob) -> str:
     return b[start:start + n].decode("utf-8", "replace")
 
 
+def python_binary() -> tuple[str, str]:
+    """The program macOS actually sees running Steward, which is what needs Full Disk Access.
+    .venv/bin/python is only a link; Homebrew's Python really runs as .../Python.app."""
+    exe = ""
+    try:
+        import os
+        exe = subprocess.run(["ps", "-o", "comm=", "-p", str(os.getpid())], capture_output=True,
+                             text=True, timeout=5).stdout.strip()
+    except Exception:
+        pass
+    if not exe or not exe.startswith("/"):
+        exe = str(Path(sys.executable).resolve())
+    m = re.match(r"(.*?\.app)/Contents/MacOS/", exe)
+    return exe, (m.group(1) if m else "")
+
+
 class IMessage(Connector):
     kind, label = "imessage", "iMessage"
     setting_fields = ("handle",)
@@ -475,7 +491,8 @@ class IMessage(Connector):
         return self.settings.get("handle", "")
 
     def extra_status(self) -> dict:
-        return {"python": sys.executable, "db_ok": self._db_ok()}
+        exe, app = python_binary()
+        return {"python": exe, "python_app": app, "db_ok": self._db_ok()}
 
     def format(self, text: str) -> str:
         return re.sub(r"\*\*(.+?)\*\*", r"\1", text)

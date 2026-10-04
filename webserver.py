@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import secrets
+import subprocess
 import time
 import uuid
 from collections import deque
@@ -439,6 +440,9 @@ class WebUI:
             elif kind == "model_background":
                 reg.set_background(m.get("id", ""))
                 await self.push_models()
+            elif kind == "model_fallback":
+                reg.set_fallback(str(m.get("value") or "auto"))
+                await self.push_models()
             elif kind == "model_test":
                 draft = m.get("model") or {}
                 saved = reg.get(draft.get("id", "")) or {}
@@ -522,7 +526,9 @@ class WebUI:
         kind, app = m["type"], m.get("kind", "")
         try:
             if kind == "conn_status":
-                pass
+                im = conns.items.get("imessage")       # Full Disk Access granted since? start it now
+                if im and im.cfg.get("enabled") and im.state == "error" and im._db_ok():
+                    await conns._start(im)
             elif kind == "conn_save":
                 await conns.configure(app, m.get("fields") or {})
             elif kind == "conn_disable":
@@ -536,6 +542,13 @@ class WebUI:
             elif kind == "conn_test":
                 await conns.test(app)
                 await self._broadcast({"type": "toast", "text": "Test message sent."}, kind="desktop")
+            elif kind == "conn_reveal_python":
+                import connectors as _c
+                exe, bundle = _c.python_binary()
+                subprocess.run(["open", "-R", bundle or exe], check=False)
+            elif kind == "conn_open_fda":
+                subprocess.run(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"],
+                               check=False)
             elif kind == "conn_funnel" and app == "whatsapp":
                 asyncio.ensure_future(conns.items["whatsapp"].ensure_funnel())
         except Exception as e:
@@ -666,6 +679,7 @@ class WebUI:
         app.router.add_post("/pair", self.pair)
         app.router.add_post("/approve", self.approve_http)
         self.bridge = bridge.Bridge(self.brain.registry)
+        self.bridge.notify = self._broadcast
         self.bridge.routes(app)
         if (STATIC / "assets").exists():
             app.router.add_static("/assets", STATIC / "assets")

@@ -43,7 +43,7 @@ function Field({ label, name, form, setForm, placeholder, secret, hint }) {
 function Steps({ children }) { return <ol className="app-steps">{children}</ol>; }
 const A = ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>;
 
-function Setup({ kind, item, form, setForm, phoneReady }) {
+function Setup({ kind, item, form, setForm, phoneReady, send }) {
   const saved = item?.configured;
   const keep = saved ? 'Saved. Leave empty to keep it.' : undefined;
   if (kind === 'whatsapp') return (
@@ -74,9 +74,18 @@ function Setup({ kind, item, form, setForm, phoneReady }) {
     <>
       <Steps>
         <li>Make sure <b>Messages</b> on this Mac is signed in with your Apple ID.</li>
-        <li>Give <b>Full Disk Access</b> to Steward’s Python so it can read new messages: System Settings → Privacy &amp; Security → Full Disk Access → <b>+</b> → press ⌘⇧G and paste:
-          <Value label="" value={item?.python} />
-          {item && !item.db_ok && <span className="app-warn">Not allowed yet.</span>}
+        <li>Let Steward read new messages (macOS calls this <b>Full Disk Access</b>):
+          {item?.db_ok ? <div className="ok-line">Allowed ✓</div> : (
+            <div className="fda">
+              <div className="row-btns">
+                <button className="btn ghost sm" onClick={() => send({ type: 'conn_open_fda', kind: 'imessage' })}>1. Open Full Disk Access</button>
+                <button className="btn ghost sm" onClick={() => send({ type: 'conn_reveal_python', kind: 'imessage' })}>2. Show Steward’s Python in Finder</button>
+                <button className="btn ghost sm" onClick={() => send({ type: 'conn_status' })}>3. Check again</button>
+              </div>
+              <span className="muted small">Drag the highlighted <b>{item?.python_app ? 'Python' : 'python'}</b> from the Finder window into the Full Disk Access list and switch it on. If it still says not allowed, quit and reopen Steward (Start Steward.command).</span>
+              <span className="muted small path">{item?.python_app || item?.python}</span>
+            </div>
+          )}
         </li>
         <li>Enter <b>your own</b> phone number or Apple ID email below and click Connect. The first reply asks to let Steward control Messages: click <b>OK</b>.</li>
         <li>On your iPhone, open Messages and <b>text yourself</b> (start a chat with your own number). Steward answers in that chat.</li>
@@ -184,7 +193,7 @@ export default function ChatAppsPanel({ data, send, onClose, phoneReady }) {
                   )}
                   {item?.enabled && item.paired && item.state === 'on' && !showSetup
                     ? <button className="link-btn" style={{ alignSelf: 'flex-start' }} onClick={() => setShowSetup(true)}>Show setup details</button>
-                    : <Setup kind={sel} item={item} form={form} setForm={setForm} phoneReady={phoneReady} />}
+                    : <Setup kind={sel} item={item} form={form} setForm={setForm} phoneReady={phoneReady} send={send} />}
                   <div className="mem-actions app-actions">
                     {(!item?.paired || showSetup || !item?.enabled || item.state !== 'on') &&
                     <button className="btn primary" onClick={() => send({ type: 'conn_save', kind: sel, fields: form })}>

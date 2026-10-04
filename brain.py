@@ -354,7 +354,10 @@ class Brain:
                             self.context_full = True      # handled by the caller (fresh start + retry)
                             log.warning("context full: %s", block.text[:200])
                             continue
-                        await channel.send_text(Secrets.redact(block.text))
+                        text = block.text
+                        if text.startswith("API Error: 400 ") and not text[15:].lstrip().startswith("{"):
+                            text = "⚠️ " + text[15:]          # our own readable message from the bridge
+                        await channel.send_text(Secrets.redact(text))
                     elif isinstance(block, ToolUseBlock):
                         log.info("call %s %s", block.name, Secrets.redact(json.dumps(block.input)[:500]))
                         if hasattr(channel, "on_tool"):

@@ -143,6 +143,16 @@ function MyModels({ models, send, onClose, startNew }) {
             <button className={`mem-new add-model ${selected === 'new' ? 'active' : ''}`} onClick={() => setSelected('new')}>
               <Icon name="plus" size={16} /> Add a model
             </button>
+            {models.items.length > 1 && (
+              <label className="field fallback-field" title="Free tiers run out quickly. When that happens mid-task, Steward carries on with this model instead of stopping.">
+                <span>If a model hits its usage limit, continue with</span>
+                <select value={models.fallback || 'auto'} onChange={(e) => send({ type: 'model_fallback', value: e.target.value })}>
+                  <option value="auto">Automatic (a local model first)</option>
+                  {models.items.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                  <option value="off">Don’t switch, just stop</option>
+                </select>
+              </label>
+            )}
           </nav>
 
           <section className="mem-editor model-form">

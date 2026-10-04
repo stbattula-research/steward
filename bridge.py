@@ -7,8 +7,10 @@ carry is ever relied on, or passed along). The bridge then:
   - OpenAI-format providers: translates Claude <-> OpenAI (streaming and tool calls) with LiteLLM.
 So real API keys stay in the Keychain and this process, never in the agent's environment.
 """
+import asyncio
 import json
 import logging
+import re
 import secrets
 import time
 
@@ -37,10 +39,41 @@ def _authorized(request: web.Request) -> bool:
     return secrets.compare_digest(request.match_info.get("secret", ""), TOKEN)
 
 
+class RateLimited:
+    """A provider said "too many requests" (HTTP 429). Nothing was sent to the engine yet."""
+    def __init__(self, m: dict, status: int, text: str, retry_after: float | None):
+        self.m, self.status, self.text, self.retry_after = m, status, text, retry_after
+        self.daily = bool(re.search(r"per.?day|daily|quota exceeded|exceeded your current quota|insufficient_quota",
+                                    text, re.I))
+
+
+def _retry_after(text: str, headers=None) -> float | None:
+    if headers and headers.get("retry-after"):
+        try:
+            return float(headers["retry-after"])
+        except ValueError:
+            pass
+    m = re.search(r"retry in ([\d.]+)\s*s", text, re.I) or re.search(r'"retryDelay":\s*"([\d.]+)s"', text)
+    return float(m.group(1)) if m else None
+
+
+def _limit_message(rl: RateLimited) -> str:
+    label = rl.m.get("label") or models.provider_of(rl.m)["label"]
+    lim = re.search(r"limit:\s*(\d+)", rl.text)
+    detail = f" (limit: {lim.group(1)} requests)" if lim else ""
+    if rl.daily:
+        return (f"{label}'s usage limit for {rl.m.get('model') or 'this model'} is used up{detail}. Free tiers reset "
+                "after a while (Gemini's daily limits reset at midnight Pacific time). To keep going now, pick another "
+                "model in the chat box, add billing with the provider, or set a fallback model in Models → My models.")
+    return (f"{label} is rate-limiting requests right now{detail}. Try again in a minute, or pick another model.")
+
+
 class Bridge:
     def __init__(self, registry: models.Registry):
         self.registry = registry
         self.session: aiohttp.ClientSession | None = None
+        self.notify = None                          # set by the web server: send a toast to the app
+        self.cooldown: dict[str, float] = {}        # model id -> time its limit should have reset
 
     def routes(self, app: web.Application) -> None:
         app.router.add_post("/bridge/{secret}/{mid}/v1/messages", self.messages)
@@ -61,13 +94,57 @@ class Bridge:
 
     # ---------------------------------------------------------- endpoints --
     async def messages(self, request: web.Request):
+        """Send the request to the model. If the provider says "too many requests": wait and retry
+        when the wait is short; otherwise continue with the fallback model (Models → My models)."""
         m, err = self._model(request)
         if err:
             return err
-        p = models.provider_of(m)
-        if p["kind"] == "openai":
-            return await self._translate(request, m)
-        return await self._forward(request, m, "/v1/messages")
+        body = await request.read()
+        tried, original, waits = {m["id"]}, m, 0
+        if self.cooldown.get(m["id"], 0) > time.time():
+            fb = self.registry.fallback_for(m, exclude=tried | self._cooling())
+            if fb:
+                m = fb
+                tried.add(m["id"])
+        last = None
+        for _ in range(6):
+            res = await self._call(request, m, body)
+            if not isinstance(res, RateLimited):
+                return res
+            last = res
+            log.warning("rate limited by %s (%s): %s", m["id"], res.retry_after, res.text[:200])
+            if not res.daily and res.retry_after is not None and res.retry_after <= 65 and waits < 2:
+                waits += 1
+                await self._toast(f"{models.provider_of(m)['label']} asked to slow down. Waiting "
+                                  f"{int(res.retry_after) + 1}s, then continuing.")
+                await asyncio.sleep(res.retry_after + 1)
+                continue
+            self.cooldown[m["id"]] = time.time() + (3600 if res.daily else 120)
+            fb = self.registry.fallback_for(original, exclude=tried | self._cooling())
+            if not fb:
+                break
+            await self._toast(f"{m['label']} hit its usage limit, so Steward is continuing with {fb['label']}.")
+            m = fb
+            tried.add(m["id"])
+            waits = 0
+        return web.json_response({"type": "error", "error": {"type": "invalid_request_error",
+                                                             "message": _limit_message(last)}}, status=400)
+
+    def _cooling(self) -> set:
+        now = time.time()
+        return {mid for mid, t in self.cooldown.items() if t > now}
+
+    async def _toast(self, text: str) -> None:
+        if self.notify:
+            try:
+                await self.notify({"type": "toast", "text": text})
+            except Exception:
+                pass
+
+    async def _call(self, request: web.Request, m: dict, body: bytes):
+        if models.provider_of(m)["kind"] == "openai":
+            return await self._translate(request, m, body)
+        return await self._forward(request, m, "/v1/messages", body)
 
     async def count_tokens(self, request: web.Request):
         m, err = self._model(request)
@@ -79,8 +156,15 @@ class Bridge:
         return web.json_response({"input_tokens": max(1, len(body) // 4)})
 
     # ------------------------------------------------- Claude-format: pass --
-    async def _forward(self, request: web.Request, m: dict, path: str):
-        body = await request.read()
+    async def _forward(self, request: web.Request, m: dict, path: str, body: bytes | None = None):
+        body = await request.read() if body is None else body
+        try:                                             # use this model's own name (matters for fallbacks)
+            data = json.loads(body)
+            if m.get("model") and data.get("model") != m["model"]:
+                data["model"] = m["model"]
+                body = json.dumps(data).encode()
+        except Exception:
+            pass
         headers = {h: request.headers[h] for h in _PASS_HEADERS if h in request.headers}
         key = models.get_key(m["id"])
         if m["provider"] == "anthropic":
@@ -94,6 +178,10 @@ class Bridge:
             upstream = await (await self._http()).post(url, data=body, headers=headers)
         except Exception as e:
             return _error(502, f"Couldn't reach {models.provider_of(m)['label']}: {e}")
+        if upstream.status == 429:
+            text = await upstream.text()
+            upstream.release()
+            return RateLimited(m, 429, text, _retry_after(text, upstream.headers))
         resp = web.StreamResponse(status=upstream.status, headers={
             "Content-Type": upstream.headers.get("Content-Type", "application/json")})
         await resp.prepare(request)
@@ -104,7 +192,7 @@ class Bridge:
         return resp
 
     # ---------------------------------------------- OpenAI-format: translate --
-    async def _translate(self, request: web.Request, m: dict):
+    async def _translate(self, request: web.Request, m: dict, raw: bytes | None = None):
         try:
             import litellm
             from litellm.anthropic_interface import messages as anthropic_messages
@@ -112,7 +200,7 @@ class Bridge:
             litellm.drop_params = True                   # skip options a provider doesn't support
         except ImportError:
             return _error(500, "The translator isn't installed. Run Start Steward.command to update.")
-        body = await request.json()
+        body = json.loads(raw) if raw is not None else await request.json()
         system = body.get("system")
         if isinstance(system, list):                     # Claude allows a list of text blocks
             system = "\n\n".join(b.get("text", "") for b in system if isinstance(b, dict))
@@ -125,6 +213,8 @@ class Bridge:
                 api_key=models.get_key(m["id"]) or "none", system=system or None, stream=stream, **kwargs)
         except Exception as e:
             status = getattr(e, "status_code", 502) or 502
+            if status == 429 or "RateLimitError" in type(e).__name__:
+                return RateLimited(m, 429, str(e), _retry_after(str(e)))
             log.warning("bridge %s error: %s", m["id"], str(e)[:300])
             return _error(status, f"{models.provider_of(m)['label']}: {str(e)[:500]}")
         if not stream:

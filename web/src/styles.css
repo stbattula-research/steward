@@ -699,3 +699,5 @@ button.task-name:hover { text-decoration: underline; }
 .field textarea:focus { border-color: var(--line-strong); }
 .field-row:has(> .field:nth-child(3)) { grid-template-columns: 1fr 1fr 1fr; }
 @media (max-width: 860px) { .field-row:has(> .field:nth-child(3)) { grid-template-columns: 1fr; } }
+.fallback-field { margin-top: auto; padding: 12px 4px 4px; font-size: 12px; } .fallback-field select { height: 32px; font-size: 13px; }
+.fda { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; } .fda .path { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }

@@ -120,6 +120,7 @@ class Registry:
         self.models: list[dict] = []
         self.active = ""        # used for chat
         self.background = ""    # used for scheduled tasks and heads-ups
+        self.fallback = "auto"  # when a model hits its usage limit: "auto", "off" or a model id
         self._key_cache: dict[str, bool] = {}
         self.load()
 
@@ -128,6 +129,7 @@ class Registry:
         if self.FILE.exists():
             data = json.loads(self.FILE.read_text())
             self.models, self.active, self.background = data["models"], data.get("active", ""), data.get("background", "")
+            self.fallback = data.get("fallback", "auto")
         if not self.models and config.BRAIN_PROVIDER != "none":
             self._seed_from_env()
         ids = [m["id"] for m in self.models]
@@ -139,7 +141,7 @@ class Registry:
 
     def save(self) -> None:
         self.FILE.write_text(json.dumps({"models": self.models, "active": self.active,
-                                         "background": self.background}, indent=2))
+                                         "background": self.background, "fallback": self.fallback}, indent=2))
         self.FILE.chmod(0o600)
 
     def _seed_from_env(self) -> None:
@@ -189,7 +191,7 @@ class Registry:
             p = PROVIDERS.get(m["provider"], {})
             items.append({**m, "provider_label": p.get("label", m["provider"]), "local": bool(p.get("local")),
                           "needs_key": bool(p.get("key")), "has_key": self.has_key(m["id"]) if p.get("key") else False})
-        return {"items": items, "active": self.active, "background": self.background,
+        return {"items": items, "active": self.active, "background": self.background, "fallback": self.fallback,
                 "providers": {k: {kk: v for kk, v in p.items()} for k, p in PROVIDERS.items()}}
 
     # ---- changes
@@ -237,6 +239,8 @@ class Registry:
             self.active = self.models[0]["id"]
         if self.background == model_id:
             self.background = self.active
+        if self.fallback == model_id:
+            self.fallback = "auto"
         self.save()
 
     def set_active(self, model_id: str) -> dict:
@@ -245,6 +249,24 @@ class Registry:
         self.active = model_id
         self.save()
         return self.active_model()
+
+    def fallback_for(self, m: dict, exclude: set | None = None) -> dict | None:
+        """Which model to continue with when `m` hits its usage limit."""
+        exclude = (exclude or set()) | {m["id"]}
+        ok = [x for x in self.models if x["id"] not in exclude and (not provider_of(x).get("key") or self.has_key(x["id"]))]
+        if self.fallback == "off" or not ok:
+            return None
+        if self.fallback not in ("auto", ""):
+            return next((x for x in ok if x["id"] == self.fallback), None)
+        # auto: a free local model first (no limits), then the background model, then anything else
+        return (next((x for x in ok if is_local(x)), None) or next((x for x in ok if x["id"] == self.background), None)
+                or ok[0])
+
+    def set_fallback(self, value: str) -> None:
+        if value not in ("auto", "off") and not self.get(value):
+            raise ValueError("Unknown model.")
+        self.fallback = value
+        self.save()
 
     def set_background(self, model_id: str) -> None:
         if not self.get(model_id):
