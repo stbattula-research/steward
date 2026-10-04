@@ -250,6 +250,8 @@ Settings live in `.env`. The wizard writes it; `.env.example` documents every op
 
 | Setting | Default | What it does |
 |---|---|---|
+| `NEW_CHAT_AFTER_HOURS` | `3` | Start a fresh conversation after this many idle hours, so replies stay fast. Memory and playbooks carry over. `0` = never. |
+| `OLLAMA_CONTEXT_LENGTH` | `32768` on 16 GB Macs, `65536` above | How much a local model holds at once. Bigger than your Mac's GPU memory makes every reply much slower. |
 | `BRAVE_API_KEY` | (empty) | Optional. Uses the Brave Search API for web search instead of the free default. |
 | `BRAIN_PROVIDER` | `ollama` | First model on a fresh install: `ollama`, or `none` to add models in the app. Models you add in the app are kept in `~/.steward/models.json` (keys in the Keychain). |
 | `OLLAMA_MODEL` | by RAM | Any local model with tool calling |
@@ -297,7 +299,7 @@ scheduler.py (tasks, watchlist) ────────────────
 | Problem | Fix |
 |---|---|
 | "This task is too big for the local model's memory" | Long browser tasks can outgrow a local model's context. Steward now summarises older steps and retries automatically. If it still fails, split the task, raise `OLLAMA_CONTEXT_LENGTH` (uses more RAM), or use a larger brain. |
-| First reply is slow | Normal for local models while the model warms up (about 1 minute after start). Pick a smaller model in **Models → Local models**, or connect a hosted provider for complex tasks. |
+| Replies are slow | Replies now appear word by word as they're written. For local models, run `ollama ps` in Terminal: the PROCESSOR column should say **100% GPU**. If part of it says CPU, the model doesn't fit your Mac's GPU memory; pick a smaller model in **Models → Local models**, or use a hosted model. The first reply after starting takes about a minute while the model loads. |
 | "Reconnecting…" in the app | Steward isn't running. Double-click `Start Steward.command`, and check `~/.steward/stderr.log`. |
 | Screenshots are blank, or clicks don't work | System Settings → Privacy & Security → allow **Screen Recording** and **Accessibility** for `.venv/bin/python` (and Terminal). |
 | "Ollama isn't reachable" | **Models → Local models → Start**, or run `brew services start ollama`. |

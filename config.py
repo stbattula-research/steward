@@ -35,7 +35,18 @@ BRAIN_MODEL = os.getenv("BRAIN_MODEL", "").strip()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:12b")   # any tool-calling model from `ollama list`
 # How much the model can hold at once (tokens). Must match what Ollama is started with.
-OLLAMA_CONTEXT = int(os.getenv("OLLAMA_CONTEXT_LENGTH", "65536"))
+def _ram_gb() -> int:
+    try:
+        import subprocess
+        return int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], stderr=subprocess.DEVNULL).strip()) // (1024 ** 3)
+    except Exception:
+        return 32
+
+
+# How much the model can hold at once. Bigger isn't free: on a 16 GB Mac a 64K window pushes part of
+# the model off the GPU, which makes every reply many times slower. Must match Ollama's setting.
+DEFAULT_CONTEXT = 32768 if _ram_gb() <= 18 else 65536
+OLLAMA_CONTEXT = int(os.getenv("OLLAMA_CONTEXT_LENGTH", "") or DEFAULT_CONTEXT)
 # Optional for ollama-cloud / custom brains: the model's real context window, so long tasks
 # get summarised before they overflow. 0 = let the engine decide.
 BRAIN_CONTEXT_TOKENS = int(os.getenv("BRAIN_CONTEXT_TOKENS", "0") or 0)
@@ -84,6 +95,8 @@ WEB_TOKEN_FILE = STATE_DIR / "web_token"
 WEB_HISTORY_FILE = STATE_DIR / "web_history.json"
 PREFS_FILE = STATE_DIR / "prefs.json"
 OPEN_APP_ON_START = _bool("OPEN_APP_ON_START", False)
+# Start a fresh conversation after this many idle hours (keeps replies fast). 0 = never.
+NEW_CHAT_AFTER_HOURS = float(os.getenv("NEW_CHAT_AFTER_HOURS", "3") or 0)
 
 # Browser: Playwright MCP with a persistent profile so your logins stick.
 BROWSER_CHANNEL = os.getenv("BROWSER_CHANNEL", "chrome")  # chrome | msedge | chromium

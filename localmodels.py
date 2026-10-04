@@ -40,6 +40,13 @@ def best_fit(ram: int) -> str:
     return fit[-1] if fit else RECOMMENDED[0]["name"]
 
 
+def ollama_env() -> dict:
+    """Ollama settings for speed (same as the installer): fits the model on the GPU and halves
+    the memory each conversation needs."""
+    return {"OLLAMA_CONTEXT_LENGTH": str(config.OLLAMA_CONTEXT), "OLLAMA_KEEP_ALIVE": "30m",
+            "OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_NUM_PARALLEL": "1"}
+
+
 def ollama_bin() -> str | None:
     for p in (shutil.which("ollama"), "/opt/homebrew/bin/ollama", "/usr/local/bin/ollama",
               "/Applications/Ollama.app/Contents/Resources/ollama"):
@@ -101,8 +108,8 @@ class LocalModels:
         self.installing = True
         await self.notify({"type": "local_status", **(await self.status())})
         try:
-            subprocess.run(["launchctl", "setenv", "OLLAMA_CONTEXT_LENGTH", str(config.OLLAMA_CONTEXT)], check=False)
-            subprocess.run(["launchctl", "setenv", "OLLAMA_KEEP_ALIVE", "30m"], check=False)
+            for k, v in ollama_env().items():
+                subprocess.run(["launchctl", "setenv", k, v], check=False)
             if not ollama_bin():
                 if await self._run(brew, "install", "ollama") != 0:
                     raise RuntimeError("Homebrew couldn't install Ollama (details above).")

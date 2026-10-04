@@ -10,6 +10,10 @@ from claude_agent_sdk import (
     AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher, PermissionResultAllow,
     PermissionResultDeny, ResultMessage, TextBlock, ToolUseBlock, create_sdk_mcp_server, tool,
 )
+try:
+    from claude_agent_sdk import StreamEvent
+except ImportError:                       # older SDK: no live text, everything else works
+    StreamEvent = None
 
 import bridge
 import config
@@ -43,6 +47,10 @@ def _context_env(window: int) -> dict:
             "CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(int(window * 0.75))}
 
 
+# Local models also skip these rarely-needed ones: every tool description is re-read on each step.
+HIDDEN_BROWSER_LOCAL = ["browser_tabs", "browser_navigate_back", "browser_handle_dialog", "browser_close",
+                        "browser_select_option"]
+
 HIDDEN_BROWSER = ["browser_console_messages", "browser_network_request", "browser_network_requests",
                   "browser_drag", "browser_drop", "browser_emulate_media", "browser_evaluate",
                   "browser_run_code_unsafe", "browser_run_code", "browser_resize", "browser_install",
@@ -53,7 +61,7 @@ def _system_prompt() -> str:
     base = (config.ROOT / "prompts" / "system.md").read_text()
     parts = [base.format(workspace=config.WORKSPACE, memory=config.MEMORY_DIR,
                          owner=config.OWNER_NAME, agent=config.AGENT_NAME,
-                         today=datetime.now().strftime("%A, %B %d, %Y, %I:%M %p"),
+                         today=datetime.now().strftime("%A, %B %d, %Y"),
                          timezone=config.TIMEZONE)]
     for name in ("about_me.md", "learned.md"):
         f = config.MEMORY_DIR / name
@@ -188,9 +196,14 @@ class Brain:
         model, env, budget = self._brain_env(m)
         local = models.is_local(m)
         decide = self._decider(channel, mode)
-        browser_args = ["-y", "@playwright/mcp@latest", "--browser", config.BROWSER_CHANNEL,
-                        "--user-data-dir", str(config.BROWSER_PROFILE),
-                        "--output-dir", str(config.DOWNLOADS)]
+        # The browser tools are installed once by the installer; `npx …@latest` would check the
+        # npm registry every time a conversation starts, which adds seconds.
+        local_bin = config.STATE_DIR / "node" / "node_modules" / ".bin" / "playwright-mcp"
+        browser_cmd, browser_args = ("npx", ["-y", "@playwright/mcp@latest"])
+        if local_bin.exists():
+            browser_cmd, browser_args = str(local_bin), []
+        browser_args += ["--browser", config.BROWSER_CHANNEL, "--user-data-dir", str(config.BROWSER_PROFILE),
+                         "--output-dir", str(config.DOWNLOADS)]
         if local:
             # Don't attach a full page dump to every click; the agent asks for one
             # (browser_snapshot) when it needs to look. Keeps local models within memory.
@@ -198,7 +211,7 @@ class Brain:
         servers = {
             "me": build_server(channel),
             "web": websearch.build_web_server(lambda: self.sources),
-            "browser": {"type": "stdio", "command": "npx", "args": browser_args},
+            "browser": {"type": "stdio", "command": browser_cmd, "args": browser_args},
             **_integrations(),
         }
         if self.scheduler and mode == "chat":
@@ -217,7 +230,8 @@ class Brain:
                                               timeout=config.APPROVAL_TIMEOUT_SEC + 60)]},
             setting_sources=None,          # ignore any other Claude settings on this Mac
             disallowed_tools=["AskUserQuestion", "mcp__claude-in-chrome", "mcp__computer-use"]
-                             + [f"mcp__browser__{t}" for t in HIDDEN_BROWSER],
+                             + [f"mcp__browser__{t}" for t in HIDDEN_BROWSER + (HIDDEN_BROWSER_LOCAL if local else [])],
+            include_partial_messages=StreamEvent is not None,     # show replies as they're written
             max_turns=config.MAX_TURNS,
             max_budget_usd=budget,
             resume=resume,
@@ -346,7 +360,16 @@ class Brain:
 
     # --------------------------------------------------------------- running --
     async def _stream(self, client: ClaudeSDKClient, channel: Channel, save_session: bool) -> None:
+        on_delta = getattr(channel, "on_delta", None)
         async for msg in client.receive_response():
+            if StreamEvent is not None and isinstance(msg, StreamEvent):
+                ev = msg.event or {}
+                if on_delta and ev.get("type") == "content_block_delta" and \
+                        (ev.get("delta") or {}).get("type") == "text_delta":
+                    await on_delta(ev["delta"].get("text", ""))
+                elif on_delta and ev.get("type") == "message_start":
+                    await on_delta(None)                  # a new reply starts: clear the draft
+                continue
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock) and block.text.strip():
@@ -384,6 +407,14 @@ class Brain:
             if asyncio.iscoroutine(res):
                 await res
 
+    def _idle_too_long(self) -> bool:
+        hours = config.NEW_CHAT_AFTER_HOURS
+        try:
+            return hours > 0 and config.SESSION_FILE.exists() and \
+                (datetime.now().timestamp() - config.SESSION_FILE.stat().st_mtime) > hours * 3600
+        except Exception:
+            return False
+
     async def _emit_sources(self) -> None:
         if self.sources.items:
             await self._hook("on_sources", self.sources.public())
@@ -399,6 +430,11 @@ class Brain:
             await self._hook("begin", origin)
             await self._hook("set_status", True, "Working")
             try:
+                if self.client is not None and self._idle_too_long():
+                    # A long-idle conversation makes every new message slow (the model re-reads all of
+                    # it). Start fresh; memory and playbooks carry over.
+                    await self.reset()
+                    await self._hook("divider", "New conversation (it had been a while). Memory and playbooks are kept.")
                 if self.client is not None and team and len(team.get("members") or []) >= 2:
                     await self._hook("set_status", True, "Team is researching")
                     try:

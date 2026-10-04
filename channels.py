@@ -95,6 +95,10 @@ class Router:
 
     # ------------------------------------------------------- Channel protocol --
     async def send_text(self, text: str) -> None:
+        if getattr(self, "_draft_flush", None):          # the final text replaces the live draft
+            self._draft_flush.cancel()
+            self._draft_flush = None
+        self._draft_buf = ""
         text, related = self._split_related(text)
         if not text:
             if related and self.web:
@@ -170,6 +174,27 @@ class Router:
             await self.web.emit(ev)
         else:
             await self.web._broadcast(ev)
+
+    async def on_delta(self, text) -> None:
+        """Live text while the model writes. None = a new reply is starting. Batched ~10x a second."""
+        if not self.web:
+            return
+        if text is None:
+            self._draft_buf = ""
+            await self.web._broadcast({"type": "draft", "reset": True})
+            return
+        self._draft_buf = getattr(self, "_draft_buf", "") + text
+        if not getattr(self, "_draft_flush", None):
+            async def flush():
+                await asyncio.sleep(0.08)
+                chunk, self._draft_buf, self._draft_flush = self._draft_buf, "", None
+                if chunk:
+                    await self.web._broadcast({"type": "draft", "text": chunk})
+            self._draft_flush = asyncio.ensure_future(flush())
+
+    async def divider(self, text: str) -> None:
+        if self.web:
+            await self.web.emit({"type": "divider", "text": text})
 
     async def set_status(self, busy: bool, label: str = "") -> None:
         if self.web:

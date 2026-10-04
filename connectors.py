@@ -298,6 +298,7 @@ class Discord(Connector):
         import discord
         intents = discord.Intents.none()
         intents.dm_messages = True
+        intents.guilds = True                 # not privileged; lets the bot see the server it was added to
         client = discord.Client(intents=intents)
         self.client = client
         me = self

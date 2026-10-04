@@ -13,7 +13,8 @@ export function useAgent() {
   const [toast, setToast] = useState(null);
   const [models, setModels] = useState({ items: [], active: '', background: '', providers: {} });
   const [councilLive, setCouncilLive] = useState({});
-  const [connectors, setConnectors] = useState({ items: [], telegram: {} });   // cid -> mid -> {steps, step}
+  const [connectors, setConnectors] = useState({ items: [], telegram: {} });
+  const [draft, setDraft] = useState('');          // the reply as it's being written   // cid -> mid -> {steps, step}
   const ws = useRef(null);
   const retry = useRef(0);
   const alive = useRef(true);
@@ -46,6 +47,7 @@ export function useAgent() {
         case 'hello_update': setInfo((i) => ({ ...i, ...ev })); break;
         case 'device': setInfo((i) => ({ ...i, device: ev.device })); break;
         case 'connectors': setConnectors(ev); break;
+        case 'draft': setDraft((d) => (ev.reset ? '' : d + (ev.text || ''))); break;
         case 'council_live':
           setCouncilLive((c) => ({ ...c, [ev.cid]: { ...(c[ev.cid] || {}), [ev.mid]: { steps: ev.steps, step: ev.step } } }));
           break;
@@ -63,7 +65,7 @@ export function useAgent() {
         case 'history': setEvents(ev.events); break;
         case 'status':
           setStatus({ busy: ev.busy, label: ev.label });
-          if (!ev.busy) setLastTool(null);
+          if (!ev.busy) { setLastTool(null); setDraft(''); }
           break;
         case 'tasks': setTasks(ev.items); break;
         case 'approval_resolved':
@@ -71,7 +73,8 @@ export function useAgent() {
             x.type === 'approval' && x.aid === ev.aid ? { ...x, approved: ev.approved } : x));
           break;
         default:
-          if (ev.type === 'tool') setLastTool(ev);
+          if (ev.type === 'tool') { setLastTool(ev); setDraft(''); }
+          if (ev.type === 'message' && ev.role === 'assistant') setDraft('');
           setEvents((prev) => [...prev, ev]);
           window.dispatchEvent(new CustomEvent('agent-event', { detail: ev }));
       }
@@ -101,7 +104,7 @@ export function useAgent() {
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(msg));
   }, []);
 
-  return { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send, councilLive, connectors };
+  return { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send, councilLive, connectors, draft };
 }
 
 export async function uploadFile(file) {

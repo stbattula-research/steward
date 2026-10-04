@@ -74,14 +74,28 @@ else
   grep -q '^BROWSER_CHANNEL=' .env || echo "BROWSER_CHANNEL=chromium" >> .env
   npx -y playwright@latest install chromium
 fi
-npx -y @playwright/mcp@latest --help >/dev/null
+# Install the browser tools once, so starting a conversation doesn't wait on the npm registry.
+mkdir -p "$HOME/.steward/node"
+npm install --prefix "$HOME/.steward/node" --no-fund --no-audit --loglevel=error @playwright/mcp@latest >/dev/null \
+  || npx -y @playwright/mcp@latest --help >/dev/null
 
 # ------------------------------------------------------------------ brain ---
 # The agent's instructions and tools need a large context window; keep the model loaded
 # between messages. Set even without Ollama, so installing it later from the app just works.
-CTX=$(envget OLLAMA_CONTEXT_LENGTH); CTX=${CTX:-65536}
+# Speed: on Macs with 16 GB or less, a 32K window keeps the whole model on the GPU (a 64K one
+# spills to the CPU and every reply gets several times slower). Flash attention and an 8-bit
+# cache halve the memory the conversation needs; one request at a time avoids reserving it twice.
+RAM_GB=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+CTX=$(envget OLLAMA_CONTEXT_LENGTH)
+if [ -z "$CTX" ]; then
+  if [ "$RAM_GB" -le 18 ]; then CTX=32768; else CTX=65536; fi
+  echo "OLLAMA_CONTEXT_LENGTH=$CTX" >> .env
+fi
 launchctl setenv OLLAMA_CONTEXT_LENGTH "$CTX"
 launchctl setenv OLLAMA_KEEP_ALIVE 30m
+launchctl setenv OLLAMA_FLASH_ATTENTION 1
+launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0
+launchctl setenv OLLAMA_NUM_PARALLEL 1
 PROVIDER=$(envget BRAIN_PROVIDER); PROVIDER=${PROVIDER:-ollama}
 if [ "$PROVIDER" = "ollama" ]; then
   MODEL=$(envget OLLAMA_MODEL); MODEL=${MODEL:-gemma4:12b}
@@ -91,7 +105,8 @@ if [ "$PROVIDER" = "ollama" ]; then
     osascript -e 'quit app "Ollama"' >/dev/null 2>&1 || true; sleep 3; open -a Ollama
   else
     need ollama
-    brew services restart ollama >/dev/null 2>&1 || (OLLAMA_CONTEXT_LENGTH="$CTX" nohup ollama serve >/dev/null 2>&1 &)
+    brew services restart ollama >/dev/null 2>&1 || (OLLAMA_CONTEXT_LENGTH="$CTX" OLLAMA_FLASH_ATTENTION=1 \
+      OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_NUM_PARALLEL=1 nohup ollama serve >/dev/null 2>&1 &)
   fi
   for i in $(seq 1 30); do curl -s -o /dev/null http://localhost:11434/api/tags && break; sleep 1; done
   OLLAMA_BIN=$(command -v ollama || echo /Applications/Ollama.app/Contents/Resources/ollama)

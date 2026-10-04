@@ -626,7 +626,7 @@ function Welcome({ info, models, onLocal, onConnect, onSkip }) {
 /* -------------------------------------------------------------------- app -- */
 
 export default function App() {
-  const { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send, councilLive, connectors } = useAgent();
+  const { events, status, tasks, info, connected, lastTool, memory, prefs, toast, setToast, models, send, councilLive, connectors, draft } = useAgent();
   const [schedOpen, setSchedOpen] = useState(false);
   const [appsOpen, setAppsOpen] = useState(false);
   const chatAppCount = (connectors.items || []).filter((c) => c.enabled && c.paired && c.state === 'on').length + (info.telegram ? 1 : 0);
@@ -656,7 +656,7 @@ export default function App() {
   useEffect(() => {                         // keep scrolled to bottom unless reading back
     const el = thread.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [items, status.busy]);
+  }, [items, status.busy, draft]);
 
   useEffect(() => {                         // desktop notification when the window isn't focused
     const onEv = (e) => {
@@ -739,7 +739,12 @@ export default function App() {
                 return null;
               })
             )}
-            {status.busy && (
+            {status.busy && draft.trim() && (
+              <div className="msg assistant drafting" aria-live="off">
+                <Markdown text={draft.replace(/\n?\s*Related:[^\n]*$/i, '') + ' ▍'} />
+              </div>
+            )}
+            {status.busy && !draft.trim() && (
               <div className="activity" aria-live="polite">
                 <ThinkingOrb state={orbFor(lastTool)} size={64} theme={theme} />
                 <div>
