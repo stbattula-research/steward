@@ -1,10 +1,19 @@
 # Steward
 
-**A private AI agent that lives on your Mac and works only for you.**
+**An open-source AI agent for your Mac: private, local-first, and controllable from your phone.**
 
-Ask it in a desktop app or from your phone (Telegram), by text or voice, and Steward does the task on your computer the way you would. It runs commands, opens apps, uses websites with your logins, takes screenshots, and sends you files. It also keeps working while you're away: it runs scheduled tasks and watches the things you care about, messaging you only when something needs you.
+[![GitHub stars](https://img.shields.io/github/stars/stbattula-research/steward?style=flat&logo=github)](https://github.com/stbattula-research/steward/stargazers)
+[![License](https://img.shields.io/github/license/stbattula-research/steward)](LICENSE)
+[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)](#quick-start)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)](requirements.txt)
+[![Local models via Ollama](https://img.shields.io/badge/local%20models-Ollama-white?logo=ollama&logoColor=black)](https://ollama.com)
+[![Release](https://img.shields.io/github/v/release/stbattula-research/steward?include_prereleases)](https://github.com/stbattula-research/steward/releases)
 
-You choose what powers it: a **free local model** that never leaves your Mac (Ollama), **Claude** through an API key, or any compatible hosted model.
+Steward is a self-hosted personal assistant that does real work on your computer. It runs commands, opens apps, uses websites with your own logins, researches the web with citations, and runs scheduled tasks while you're away. You talk to it from the **Mac app**, its **iPhone/Android app**, or **WhatsApp, iMessage, Telegram, Discord or Slack**, by text or voice. Risky actions always wait for your **Approve**.
+
+Use a **free local model** (Ollama, nothing leaves your Mac), **Claude**, **Gemini**, **OpenAI**, **OpenRouter**, **DeepSeek** and more. Switch per chat, or put up to three models on a **team** that debates the answer.
+
+<!-- Demo: replace with a 60-second GIF or video, e.g. ![Steward demo](docs/demo.gif) -->
 
 ![Steward desktop app](docs/approval.png)
 
